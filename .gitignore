@@ -14,3 +14,4 @@ outputs/
 
 tmp/
 claude_code_cwd/
+.gstack/

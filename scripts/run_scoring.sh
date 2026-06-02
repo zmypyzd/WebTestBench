@@ -5,9 +5,9 @@ ts=`date +%Y_%m_%d_%H_%M`
 log_dir=./logs/scoring
 mkdir -p $log_dir
 # ======================================================================
-API_BASE_URL=XXX  # e.g., https://openrouter.ai/api
-API_KEY=XXX       # e.g., sk-or-v1-XXX
-API_MODEL=qwen/qwen3.5-27b
+API_BASE_URL=https://api.minimaxi.com/v1/chat/completions  # MiniMax OpenAI-compatible chat-completions endpoint (scoring posts directly to this URL)
+API_KEY=${MINIMAX_API_KEY:-XXX}  # export MINIMAX_API_KEY=sk-... in your shell; never commit the real key
+API_MODEL=MiniMax-M3
 # ======================================================================
 DATASET_PATH=./data/WebTestBench/WebTestBench.jsonl
 OUTPUT_ROOT=./outputs

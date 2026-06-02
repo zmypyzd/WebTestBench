@@ -568,12 +568,15 @@ class ScoringPipeline:
             # 'reasoning': {'effort': 'minimal'},
             'reasoning': {'effort': 'none'},
             'temperature': 0.1,
-            "max_tokens": 1024
+            # Reasoning models (e.g. MiniMax-M3) spend tokens on <think> before
+            # the answer, so give enough headroom to also emit the match list.
+            "max_tokens": 4096
         }
 
         for attempt in range(1, retry + 1):
             try:
-                response = requests.post(url=url, headers=headers, json=data, timeout=20)
+                # Reasoning models can take >20s; allow generous read timeout.
+                response = requests.post(url=url, headers=headers, json=data, timeout=120)
                 resp = response.json()
                 print(f"attempt: {attempt}, resp: {resp}")
 
@@ -591,8 +594,26 @@ class ScoringPipeline:
 
         return False, None, None
 
+    @staticmethod
+    def _clean_match_answer(answer: str) -> str:
+        """Isolate the Python list literal from a (possibly reasoning) LLM reply.
+
+        Reasoning models such as MiniMax-M3 wrap output in <think>...</think> and
+        may add prose or ```python fences, all of which break ast.literal_eval.
+        Strip those and return just the outermost [...] literal.
+        """
+        if not answer:
+            return answer
+        text = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL | re.IGNORECASE)  # truncated think
+        text = re.sub(r"```[a-zA-Z]*", "", text).replace("```", "")
+        start, end = text.find("["), text.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            text = text[start:end + 1]
+        return text.strip()
+
     def _get_matches(
-        self, 
+        self,
         instruction: str, 
         gold_items: Dict[str, dict], 
         pred_items: Dict[str, dict],
@@ -642,7 +663,7 @@ class ScoringPipeline:
             
             try:
                 # Parse LLM output as a Python literal list of pairs.
-                match_ids = ast.literal_eval(answer)
+                match_ids = ast.literal_eval(self._clean_match_answer(answer))
                 break
             except Exception as e:
                 print_red(f"[Attempt {attempt}/{retry}] Invalid match format: {e}")

@@ -398,7 +398,23 @@ class ClaudeCodeWebTester_Gold(BaseAgent):
     # ------------------------------------------------------------------ #
     # Agent configuration
     # ------------------------------------------------------------------ #
-    
+
+    def _provider_env(self) -> Dict[str, str]:
+        """Environment overrides for the Claude Agent SDK subprocess.
+
+        - When base_url AND api_key are both set, redirect the SDK to a custom
+          Anthropic-compatible provider (e.g. OpenRouter / MiniMax).
+        - When both are empty, return {} so the SDK falls back to the locally
+          logged-in Claude Code CLI credentials (native Anthropic models).
+        """
+        if self.api_config.base_url and self.api_config.api_key:
+            return {
+                "ANTHROPIC_BASE_URL": self.api_config.base_url,
+                "ANTHROPIC_AUTH_TOKEN": self.api_config.api_key,
+                "ANTHROPIC_API_KEY": "",
+            }
+        return {}
+
     def _get_chat_agent_options(
         self, 
         system_prompt: Optional[str] = None,
@@ -407,16 +423,12 @@ class ClaudeCodeWebTester_Gold(BaseAgent):
     ) -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
             system_prompt=system_prompt,
-            allowed_tools=None,
+            allowed_tools=[],  # chat-only checklist stage needs no tools (SDK >=0.2 requires a list, not None)
             model=self.api_config.model,
             max_turns=max_turns,
             max_buffer_size=max_buffer_size,
             cwd=self.cwd_dir,
-            env={
-                "ANTHROPIC_BASE_URL": self.api_config.base_url,
-                "ANTHROPIC_AUTH_TOKEN": self.api_config.api_key,
-                "ANTHROPIC_API_KEY": ""
-            }
+            env=self._provider_env(),
         )
 
     def _get_browser_agent_options(
@@ -447,9 +459,5 @@ class ClaudeCodeWebTester_Gold(BaseAgent):
             max_turns=max_turns,
             max_buffer_size=max_buffer_size,
             cwd=self.cwd_dir,
-            env={
-                "ANTHROPIC_BASE_URL": self.api_config.base_url,
-                "ANTHROPIC_AUTH_TOKEN": self.api_config.api_key,
-                "ANTHROPIC_API_KEY": "",
-            }
+            env=self._provider_env(),
         )
