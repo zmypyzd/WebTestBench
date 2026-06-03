@@ -14,7 +14,10 @@ _HEADER_RE = re.compile(r"^#{2,4}\s*(?:\*\*)?([A-Za-z]{2,3}-\d+)(?:\*\*)?\s*[:·
 _INLINE_RE = re.compile(r"^(?:- )?\*\*([A-Za-z]{2,3}-\d+):\s*(PASS|FAIL)\*\*\s*(.*)$", re.IGNORECASE)
 _STATUS_RE = re.compile(r"\b(PASS|FAIL)\b", re.IGNORECASE)
 _PHANTOM_RE = re.compile(r"^BUG-\d+$", re.IGNORECASE)
-_DEDICATED_STATUS_RE = re.compile(r"^\*{0,2}(?:status:\s*)?(pass|fail)\*{0,2}$", re.IGNORECASE)
+_DEDICATED_STATUS_RE = re.compile(
+    r"^\*{0,2}\s*(?:(?:status|result)\s*:\s*)?(pass|fail)\s*\*{0,2}$",
+    re.IGNORECASE,
+)
 
 
 def count_phantom_ids(text: str) -> int:
