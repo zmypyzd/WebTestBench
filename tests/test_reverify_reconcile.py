@@ -136,3 +136,13 @@ def test_reconcile_negated_bug_report_mention_does_not_flip():
     final, stats = reconcile(_pass1(), reverify)
     assert "- [X] CS-01" in final   # not flipped: no real Bug Report block
     assert stats["flipped"] == []
+
+
+from agent.reverify_reconcile import filter_to_classes
+
+
+def test_filter_to_classes_keeps_only_named_classes_case_insensitive():
+    ids = {"FT-01", "CS-03", "IX-04", "CT-02", "cs-99"}
+    assert filter_to_classes(ids, ("CS", "IX")) == {"CS-03", "IX-04", "cs-99"}
+    assert filter_to_classes(ids, ("FT",)) == {"FT-01"}
+    assert filter_to_classes(set(), ("CS", "IX")) == set()

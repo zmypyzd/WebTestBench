@@ -22,6 +22,18 @@ def _extract_test_result_section(text: str) -> str:
     return ""
 
 
+def filter_to_classes(ids: Set[str], classes: Tuple[str, ...]) -> Set[str]:
+    """Keep only TEST-IDs whose class prefix (before the first '-') is in `classes`.
+
+    Used to scope re-verification to the classes where detection actually misjudges
+    (CS/IX per the P2 diagnosis); FT/CT re-verification was empirically pure FP risk
+    with no recall deficit (n=1 smoke: 0002 flipped FT-02 as a false alarm). Class
+    comparison is case-insensitive.
+    """
+    wanted = {c.upper() for c in classes}
+    return {tid for tid in ids if tid.split("-", 1)[0].upper() in wanted}
+
+
 def parse_pass_items(test_result_text: str) -> Set[str]:
     """TEST-IDs marked PASS ('- [X]') within the '# Test Result' section only."""
     section = _extract_test_result_section(test_result_text)

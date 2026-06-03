@@ -7,13 +7,13 @@ set -uo pipefail
 cd /Users/zmy/intership/5-25/webtest_orginal/WebTestBench
 
 # ---- EDIT THESE ----
-DATA=data/WebTestBench/_reverifyabl.jsonl   # small held-out JSONL (smoke n~3 first; NOT the P1/P2-tuned 14)
+DATA=data/WebTestBench/_p2abl.jsonl          # reuse the p2abl 6-record subset
 PROJ=data/WebTestBench/web_applications
-SRC=outputs/XXX_BASELINE_VERSION            # existing baseline run dir holding checklist.md + result.md per record
-RECS="XXX XXX XXX"                           # record numeric suffixes, e.g. 0001 0002 0005
-MODEL=sonnet                                 # reverify (browser) model
-ABASE=""                                     # detection/reverify api_base_url (provider)
-AKEY=""                                      # detection/reverify api_key
+SRC=outputs/p2abl-base-r1                    # clean BASE-arm run (6/6) holds checklist.md + result.md
+RECS="0001 0002 0005 0006 0007 0024"         # the p2abl records
+MODEL=sonnet                                 # reverify (browser) model — native Claude CLI creds
+ABASE=""                                     # empty -> native Claude CLI auth (as p2abl ran)
+AKEY=""                                      # empty -> native Claude CLI auth
 BASE_PORT=6000
 # --------------------
 

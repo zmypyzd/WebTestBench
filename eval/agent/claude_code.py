@@ -11,7 +11,7 @@ from claude_agent_sdk import (
 )
 
 from agent import APIConfig, BaseAgent
-from agent.reverify_reconcile import parse_pass_items, build_sub_checklist, reconcile
+from agent.reverify_reconcile import parse_pass_items, build_sub_checklist, reconcile, filter_to_classes
 from prompt import USER_PROMPT
 from tools import PlaywrightTools
 from utils import *
@@ -49,6 +49,9 @@ class ClaudeCodeWebTester(BaseAgent):
         # BaseAgent declares reverify_enabled/result_reverified_path; the gate value
         # arrives via kwargs from run_agent.py (constructor previously dropped kwargs).
         self.reverify_enabled = bool(kwargs.get("reverify", False))
+        # Classes whose PASS items get re-verified/flippable. CS/IX are the diagnosed
+        # misjudgment classes; FT/CT were pure FP risk in the n=1 smoke.
+        self.reverify_classes = ("CS", "IX")
         self.message_class_counts: Dict[str, Dict[str, Any]] = {}
         self.session_success = True
         self.recent_assistant_text_blocks: Dict[str, List[str]] = {}
@@ -212,6 +215,10 @@ class ClaudeCodeWebTester(BaseAgent):
         pass1_text = self._load_file_content(self.result_path)
         checklist_md = self._load_file_content(self.checklist_path)
         pass_ids = parse_pass_items(pass1_text)
+        # Scope re-verification to the classes where detection actually misjudges
+        # (CS/IX per the P2 diagnosis). FT/CT re-verification was empirically pure
+        # FP risk with no recall gain (n=1 smoke 0002: FT-02 flipped as a false alarm).
+        pass_ids = filter_to_classes(pass_ids, self.reverify_classes)
 
         # Nothing PASSed -> nothing to re-verify; reconciled == first pass.
         if not pass_ids:
