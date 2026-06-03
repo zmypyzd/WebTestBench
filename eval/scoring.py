@@ -548,7 +548,10 @@ class ScoringPipeline:
 
         # 2) Fallback: '### <ID> ...' header + nearest following PASS/FAIL marker.
         hdr = re.compile(r"^#{2,4}\s*(?:\*\*)?([A-Z]{2,3}-\d+)(?:\*\*)?\s*[:·–—\-]?\s*(.*)$")
-        status = re.compile(r"\b(PASS|FAIL)\b", re.IGNORECASE)
+        _dedicated_status = re.compile(
+            r"^\*{0,2}\s*(?:(?:status|result)\s*:\s*)?(pass|fail)\s*\*{0,2}$",
+            re.IGNORECASE,
+        )
         cur = None
         seen_status: Dict[str, bool] = {}
         for line in lines:
@@ -563,7 +566,11 @@ class ScoringPipeline:
                 seen_status[cur] = False
                 continue
             if cur and not seen_status.get(cur):
-                sm = status.search(s)
+                sm = re.fullmatch(
+                    r"\*{0,2}\s*(?:(?:status|result)\s*:\s*)?(pass|fail)\s*\*{0,2}",
+                    s,
+                    re.IGNORECASE,
+                )
                 if sm:
                     pred_items[cur]["pass"] = sm.group(1).upper() == "PASS"
                     seen_status[cur] = True

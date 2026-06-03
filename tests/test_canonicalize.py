@@ -119,3 +119,28 @@ def test_scoring_parse_pred_items_uses_normalize_when_enabled():
     items = _P._parse_pred_items(_P(), text)
     assert "FT-01" in items and items["FT-01"]["pass"] is True
     assert not any(k.upper().startswith("BUG") for k in items)
+
+
+def test_scoring_fallback_ignores_prose_pass_fail_when_canonicalize_off():
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "eval"))
+    import scoring
+    text = ("### FT-01: browse works\n"
+            "  - Evidence: expected no FAIL state, grid renders fine\n")
+
+    class _P:
+        canonicalize = False
+        _parse_pred_items = scoring.ScoringPipeline._parse_pred_items
+
+    items = _P._parse_pred_items(_P(), text)
+    assert "FT-01" in items
+    assert items["FT-01"]["pass"] is True   # prose 'FAIL' must NOT flip it
+
+
+def test_evidence_line_with_fail_word_does_not_flip_heading_under_normalize():
+    out = normalize_to_canonical(
+        "### FT-01: browse works\n**Result: PASS**\n  - Evidence: no FAIL state observed\n"
+    )
+    assert "- [x] FT-01: browse works" in out
+    assert "- [ ] FT-01" not in out
