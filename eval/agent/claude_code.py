@@ -44,6 +44,10 @@ class ClaudeCodeWebTester(BaseAgent):
 
         self.checklist_path = self.output_dir / "checklist.md"
         self.result_path = self.output_dir / "result.md"
+        self.result_reverify_raw_path = self.output_dir / "result_reverify_raw.md"
+        # BaseAgent declares reverify_enabled/result_reverified_path; the gate value
+        # arrives via kwargs from run_agent.py (constructor previously dropped kwargs).
+        self.reverify_enabled = bool(kwargs.get("reverify", False))
         self.message_class_counts: Dict[str, Dict[str, Any]] = {}
         self.session_success = True
         self.recent_assistant_text_blocks: Dict[str, List[str]] = {}
