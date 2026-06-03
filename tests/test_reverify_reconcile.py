@@ -101,6 +101,7 @@ def test_reconcile_flips_pass_to_fail_only_with_bug_report():
     assert "- [X] FT-01" in final            # untouched pass
     assert "- [ ] FT-02" in final            # first-pass fail preserved verbatim
     assert stats["flipped"] == ["CS-01"]
+    assert stats["considered"] == 2   # FT-01 and CS-01 are the two PASS items
 
 
 def test_reconcile_bare_fail_without_bug_report_does_not_flip():
@@ -124,3 +125,14 @@ def test_reconcile_does_not_retest_or_alter_first_pass_fails():
     reverify = "# Test Result\n## Functionality\n- [X] FT-02: looks fine now\n"
     final, _ = reconcile(_pass1(), reverify)
     assert "- [ ] FT-02" in final            # first-pass FAIL stays FAIL
+
+
+def test_reconcile_negated_bug_report_mention_does_not_flip():
+    reverify = """# Test Result
+## Constraint
+- [ ] CS-01: still fails per tester but
+  - Note: No Bug Report was produced because it actually works
+"""
+    final, stats = reconcile(_pass1(), reverify)
+    assert "- [X] CS-01" in final   # not flipped: no real Bug Report block
+    assert stats["flipped"] == []

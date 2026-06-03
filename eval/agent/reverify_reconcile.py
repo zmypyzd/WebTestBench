@@ -42,7 +42,6 @@ def parse_result_items(test_result_text: str) -> Dict[str, dict]:
     section = _extract_test_result_section(test_result_text)
     lines = section.splitlines()
     items: Dict[str, dict] = {}
-    order: List[str] = []
 
     cur: str = None
     for line in lines:
@@ -50,13 +49,12 @@ def parse_result_items(test_result_text: str) -> Dict[str, dict]:
         if m:
             cur = m.group(2).strip()
             items[cur] = {"pass": m.group(1).lower() == "x", "block": [line], "has_bug_report": False}
-            order.append(cur)
             continue
         if cur is not None:
             # Indented continuation line belongs to the current item.
             if line.strip() == "" or line[:1].isspace():
                 items[cur]["block"].append(line)
-                if "bug report" in line.lower():
+                if re.match(r"^\s*-\s+bug report\s*[:\-]", line, re.IGNORECASE):
                     items[cur]["has_bug_report"] = True
             else:
                 cur = None
@@ -105,11 +103,15 @@ def reconcile(pass1_text: str, reverify_text: str) -> Tuple[str, dict]:
     items and untouched PASS items are emitted verbatim. Returns (final_text, stats).
     """
     reverify_items = parse_result_items(reverify_text)
-    section_start = pass1_text.find("# Test Result")
-    if section_start == -1:
+    all_lines = pass1_text.splitlines(keepends=True)
+    section_line_idx = next(
+        (i for i, ln in enumerate(all_lines) if ln.strip().startswith("# Test Result")),
+        None,
+    )
+    if section_line_idx is None:
         return pass1_text, {"flipped": [], "considered": 0}
-    head = pass1_text[:section_start]
-    body_lines = pass1_text[section_start:].splitlines()
+    head = "".join(all_lines[:section_line_idx])
+    body_lines = "".join(all_lines[section_line_idx:]).splitlines()
 
     out: List[str] = []
     flipped: List[str] = []
