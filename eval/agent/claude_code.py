@@ -11,6 +11,7 @@ from claude_agent_sdk import (
 )
 
 from agent import APIConfig, BaseAgent
+from agent.reverify_reconcile import parse_pass_items, build_sub_checklist, reconcile, filter_to_classes, has_canonical_items
 from prompt import USER_PROMPT
 from tools import PlaywrightTools
 from utils import *
@@ -44,6 +45,13 @@ class ClaudeCodeWebTester(BaseAgent):
 
         self.checklist_path = self.output_dir / "checklist.md"
         self.result_path = self.output_dir / "result.md"
+        self.result_reverify_raw_path = self.output_dir / "result_reverify_raw.md"
+        # BaseAgent declares reverify_enabled/result_reverified_path; the gate value
+        # arrives via kwargs from run_agent.py (constructor previously dropped kwargs).
+        self.reverify_enabled = bool(kwargs.get("reverify", False))
+        # Classes whose PASS items get re-verified/flippable. CS/IX are the diagnosed
+        # misjudgment classes; FT/CT were pure FP risk in the n=1 smoke.
+        self.reverify_classes = ("CS", "IX")
         self.message_class_counts: Dict[str, Dict[str, Any]] = {}
         self.session_success = True
         self.recent_assistant_text_blocks: Dict[str, List[str]] = {}
@@ -66,6 +74,7 @@ class ClaudeCodeWebTester(BaseAgent):
             self.server_deploy,
             self.checklist_generation,
             self.defect_detection,
+            self.defect_reverify,
             self.extract_result_file,
         ]
 
@@ -174,7 +183,124 @@ class ClaudeCodeWebTester(BaseAgent):
         else:
             self._mark_stage(stage=stage, status="error", message=f"Stage {stage} did not produce {target_file}.")
             return False
-    
+
+    async def defect_reverify(self) -> bool:
+        stage = "defect_reverify"
+        target_file = self.result_reverified_path
+        self.current_stage = stage
+
+        # Gate: no-op when disabled -> baseline byte-identical.
+        if not self.reverify_enabled:
+            return True
+
+        if self._should_skip_stage(target_file, stage):
+            return True
+
+        if not self.result_path.exists():
+            # No first-pass result to build on or fall back to: genuine hard error
+            # (baseline could not score this record either).
+            self._mark_stage(stage=stage, status="error", message="reverify needs result.md.")
+            return False
+        if not self.checklist_path.exists():
+            # Can't build a sub-checklist, but we must not regress a scorable record to
+            # unscored: degrade to the first pass instead of aborting the pipeline.
+            return self._reverify_degrade(
+                stage, target_file, self._load_file_content(self.result_path),
+                "reverify: checklist.md missing; kept first pass.",
+            )
+
+        self._write_stage_success(stage, True)
+        self._mark_stage(stage=stage, status="running", message="🚀 Defect Re-Verify ...")
+
+        pass1_text = self._load_file_content(self.result_path)
+        checklist_md = self._load_file_content(self.checklist_path)
+
+        # Non-canonical first-pass format (e.g. heading-style '### FT-01 ... PASS') is
+        # invisible to our checkbox parser, so reverify cannot run on it. Surface this
+        # LOUDLY instead of silently looking like "ran, nothing to flip" — detection
+        # format variance is an upstream gap, not a clean no-op.
+        if not has_canonical_items(pass1_text):
+            self._emit_event(type_name="reverify_unparseable", stage=stage,
+                             payload=dict(result_chars=len(pass1_text)))
+            self._mark_stage(stage=stage, status="skip",
+                             message="reverify: first-pass result not in canonical checkbox format; skipped (kept first pass).")
+            self.write_markdown(target_file, pass1_text)
+            self._emit_file_event(stage, target_file)
+            return True
+
+        pass_ids = parse_pass_items(pass1_text)
+        # Scope re-verification to the classes where detection actually misjudges
+        # (CS/IX per the P2 diagnosis). FT/CT re-verification was empirically pure
+        # FP risk with no recall gain (n=1 smoke 0002: FT-02 flipped as a false alarm).
+        pass_ids = filter_to_classes(pass_ids, self.reverify_classes)
+
+        # Canonical items exist but none in scope PASS -> genuinely nothing to re-verify.
+        if not pass_ids:
+            self.write_markdown(target_file, pass1_text)
+            self._emit_file_event(stage, target_file)
+            print_green("✅ Re-Verify skipped (no in-scope PASS items).")
+            return True
+
+        sub_checklist, dropped = build_sub_checklist(checklist_md, pass_ids)
+        if dropped:
+            self._emit_event(type_name="reverify_dropped_ids", stage=stage,
+                             payload=dict(count=len(dropped), ids=dropped))
+        if sub_checklist.strip() == "# Test Checklist":
+            # All PASS ids drifted; nothing concrete to re-test -> keep first pass.
+            self.write_markdown(target_file, pass1_text)
+            self._emit_file_event(stage, target_file)
+            return True
+
+        prompt = USER_PROMPT["defect_reverify"].substitute(
+            instruction=self.instruction, server_url=self.server_url, checklist=sub_checklist,
+        )
+        if self.event_log_stream:
+            self.event_log_stream.write(f"{'-'*20} REVERIFY PROMPT {'-'*20}\n{prompt}\n{'-'*50}\n")
+        options = self._get_browser_agent_options(max_turns=self.max_turns)
+
+        result_message = ""
+        num_turns = 0
+        async for message in query(prompt=prompt, options=options):
+            self._log_session_id(message, session_name=stage, stage=stage, prompt=prompt)
+            self._handle_message(message, stage=stage)
+            if isinstance(message, ResultMessage):
+                result_message = message.result
+                num_turns = message.num_turns
+
+        # Degrade on any failure: reconciled := first pass (never destroy caught bugs).
+        if num_turns > self.max_turns:
+            return self._reverify_degrade(stage, target_file, pass1_text, "reverify exceeded turn budget; kept first pass.")
+
+        reverify_raw, from_result_message = self._extract_final_result(result_message, stage=stage)
+        self._record_final_result_source(stage, from_result_message)
+        self.write_markdown(self.result_reverify_raw_path, reverify_raw)
+
+        if not self._has_required_result(reverify_raw):
+            return self._reverify_degrade(stage, target_file, pass1_text, "reverify output missing '# Test Result'; kept first pass.")
+
+        try:
+            reconciled, stats = reconcile(pass1_text, reverify_raw)
+        except Exception as exc:
+            return self._reverify_degrade(stage, target_file, pass1_text, f"reconcile failed ({exc}); kept first pass.")
+
+        self._emit_event(type_name="reverify_flips", stage=stage,
+                         payload=dict(flipped=stats["flipped"], considered=stats["considered"]))
+        self.write_markdown(target_file, reconciled)
+
+        if self._verify_output_file(target_file):
+            self._emit_file_event(stage, target_file)
+            print_green(f"✅ Re-Verify Completed (flipped {len(stats['flipped'])}/{stats['considered']}).")
+            return True
+        self._mark_stage(stage=stage, status="error", message=f"Stage {stage} did not produce {target_file}.")
+        return False
+
+    def _reverify_degrade(self, stage: str, target_file, pass1_text: str, reason: str) -> bool:
+        """Keep the first-pass result when re-verify cannot safely improve on it."""
+        self.write_markdown(target_file, pass1_text)
+        self._mark_stage(stage=stage, status="error", message=reason)
+        self._emit_file_event(stage, target_file)
+        return True
+
     # ------------------------------------------------------------------ #
     # Conversation Helpers
     # ------------------------------------------------------------------ #
@@ -289,6 +415,7 @@ class ClaudeCodeWebTester(BaseAgent):
         check_final_fun = {
             "checklist_generation": self._has_required_checklist,
             "defect_detection": self._has_required_result,
+            "defect_reverify": self._has_required_result,
         }
         if stage in check_final_fun.keys():
             if check_final_fun[stage](result_text):

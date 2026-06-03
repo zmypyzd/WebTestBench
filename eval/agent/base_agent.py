@@ -51,7 +51,22 @@ class BaseAgent:
         self.result_path = self.output_dir / "result.md"
         self.result_extracted_path = self.output_dir / "result_extracted.md"
         self.session_meta_path = self.output_dir / "session_meta.json"
-    
+        self.result_reverified_path = self.output_dir / "result_reverified.md"
+        # Set True by subclasses when the --reverify gate is on; gates final_result_path.
+        self.reverify_enabled: bool = False
+
+    @property
+    def final_result_path(self) -> Path:
+        """The result file extract_result_file should consume.
+
+        When reverify is enabled and produced a reconciled file, that is canonical;
+        otherwise fall back to the first-pass result.md. This is the ONLY place the
+        downstream artifact source is decided, so scoring needs no change.
+        """
+        if self.reverify_enabled and self.result_reverified_path.exists():
+            return self.result_reverified_path
+        return self.result_path
+
     async def extract_result_file(self) -> bool:
         stage = "result_extract"
         self.current_stage = stage
@@ -61,18 +76,18 @@ class BaseAgent:
 
         self._write_stage_success(stage, True)
         try:
-            content = self._load_file_content(self.result_path)
+            content = self._load_file_content(self.final_result_path)
         except Exception as exc:
             self._mark_stage(stage=stage, status="error", message=f"Failed to read result.md: {exc}")
             return False
 
         extracted = self._extract_test_result_section(content)
         if extracted is None or extracted.strip() == "":
-            if self.result_path.exists():
+            if self.final_result_path.exists():
                 timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-                # result 
-                error_path = self.result_path.with_name(f"result-error_{timestamp}.md")
-                self.result_path.rename(error_path)
+                # result
+                error_path = self.final_result_path.with_name(f"{self.final_result_path.stem}-error_{timestamp}.md")
+                self.final_result_path.rename(error_path)
                 # session
                 session_error_path = self.session_meta_path.with_name(f"session_meta-error_{timestamp}.json")
                 shutil.copy2(self.session_meta_path, session_error_path)
