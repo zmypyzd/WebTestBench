@@ -282,3 +282,26 @@ New `eval/agent/evidence_lint.py` (`find_unsupported_pass`, flag-only) + `EVIDEN
 **Status: code shipped & unit-tested; empirical ablation NOT yet run.** The Step 2 ablation requires two full WebTester agent runs (baseline vs `--require_evidence`) with a FIXED checklist, which needs the **agent model's API config** (the `XXX` placeholders in `scripts/run_webtester_cc.sh` for `API_BASE_URL`/`API_KEY`/`MODEL`) — the MiniMax key wired earlier is only the scoring matcher, not the agent. That config was not available in this session, so the run is deferred. Hard checkpoint honored for Step 1 (passed its gold-independent gate); Step 2's judgment gate (item-level mis-PASS→FAIL flips on 0002-class records, no new FPs, drift-free-subset F1 non-regression, tool-call covariates) is to be evaluated once the agent runs are produced.
 
 **To run Step 2 ablation:** set the agent API in `scripts/run_webtester_cc.sh`; run the agent on the record set into `_evid_base` (no flag) and `_evid_on` (`--require_evidence`), copying the baseline `checklist.md` into the evidence run dirs before detection (confound control); score both; then `python scripts/ablate_evidence.py`.
+
+---
+
+## Step 2 — Evidence-forced judgment — ABLATED (2026-06-04): NO-OP (harmless, unproven)
+
+Ran the real ablation on record **0002** (the designated judgment-miss target). Agent = **sonnet** (CLI creds); scoring matcher = MiniMax-M3 with `--canonicalize`. Confound control: baseline run produced `checklist.md`; it was copied into the evidence run dir so `checklist_generation` SKIPPED (verified) and only `defect_detection` differed by `--require_evidence`.
+
+**Real-data format fix needed first:** the sonnet agent emitted `- [x] **FT-01** — desc` (bold id, em-dash, NO colon) — a dialect `normalize_to_canonical` didn't cover; scoring parsed 0 items. Extended canonicalize (`_CHECKBOX_LOOSE_RE`, commit bee5e71) → the 0002 baseline now parses to 24 items. (Another instance of real agent output exceeding the prompt's STRICT FORMAT.)
+
+**Evidence requirement was followed:** `__EVENT__ evidence_lint` = "0 PASS item(s) lack Evidence" (21 Evidence lines emitted).
+
+**Result (F1 re-scored 3× per arm to separate matcher variance from real effect; agent output is fixed, only the matcher is non-deterministic):**
+
+| arm | F1 (3 matcher draws) | item-level PASS→FAIL flips | tool-calls |
+|---|---|---|---|
+| baseline | 0.500, 0.286, 0.286 | — | 83 |
+| evidence | 0.286, 0.286, 0.286 | **0** (of 24 common items) | 73 |
+
+**Verdict: NO-OP.** The two arms are statistically the same (mode F1 0.286; baseline's 0.500 was a single lucky matcher draw, its repeats == evidence). The evidence requirement changed **zero** judgments. Root cause: **a sonnet agent does not commit the rubber-stamp-PASS-without-observing mistake that Step 2 targets** — on 0002 it worked around the time-drift by creating its own future-dated events to populate the grid, then tested, rather than leaving the grid empty and marking browse PASS (which is exactly what the weaker product baseline did). So the target failure mode does not reproduce with a capable agent, and the structural evidence nudge has nothing to correct. Consistent with the prior P2 finding ("the agent already does adversarial QA; judgment is the limit and prompt-tuning can't move it") — now extended: a structurally-enforced evidence field is also ~no-op for a capable agent.
+
+**Disposition: KEEP behind flag, default OFF; do NOT enable by default.** Harmless (lint clean, format fine, no budget blow-up, no FP introduced), but value unproven. To ever demonstrate value you'd need a record where a *capable* agent genuinely mis-judges a covered item — the time-drift records are not it (sonnet routes around them). n=1 (single record); broader runs are unlikely to overturn the structural conclusion and cost full agent campaigns. The reusable assets (evidence schema, `evidence_lint`, harness) remain for future weaker-agent or stricter-escalation (option b/c) experiments.
+
+**Net for the branch:** Step 1 (canonicalize) is a real KEEP win (unblocks scoring on format-crashed records). Step 2 (evidence) is harmless-but-no-op on a capable agent — ship the code behind its default-off flag, do not turn it on.
