@@ -431,9 +431,16 @@ class ClaudeCodeWebTester(BaseAgent):
                     ]
                 }
             },
-            allowed_tools=PlaywrightTools,
+            # Playwright MCP (preferred) PLUS sanctioned white-box tools: reading
+            # the app's source/seed data is explicitly allowed (only the gold
+            # answer is off-limits). NOTE: allowed_tools is an auto-approve list,
+            # not an availability gate, so Bash was already reachable; we make the
+            # policy explicit and block mutation/screenshot via disallowed_tools.
+            allowed_tools=PlaywrightTools + ["Bash", "Read", "Grep", "Glob"],
             disallowed_tools=[
                 "mcp__playwright__browser_take_screenshot",
+                "Write",
+                "Edit",
             ],
             model=self.api_config.model,
             max_turns=max_turns,
