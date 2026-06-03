@@ -144,3 +144,33 @@ def test_evidence_line_with_fail_word_does_not_flip_heading_under_normalize():
     )
     assert "- [x] FT-01: browse works" in out
     assert "- [ ] FT-01" not in out
+
+
+def test_bold_id_emdash_checkbox_becomes_canonical():
+    out = normalize_to_canonical("- [x] **FT-01** — Events display on browse page\n")
+    assert "- [x] FT-01: Events display on browse page" in out
+
+
+def test_bold_id_emdash_fail_checkbox_becomes_canonical():
+    out = normalize_to_canonical("- [ ] **CS-02** — reject past dates. **FAIL**\n")
+    assert "- [ ] CS-02: reject past dates. **FAIL**" in out
+
+
+def test_loose_checkbox_is_idempotent_and_canonical_untouched():
+    once = normalize_to_canonical("- [x] **FT-01** — desc\n- [x] FT-02: already canonical\n")
+    twice = normalize_to_canonical(once)
+    assert once == twice
+    assert "- [x] FT-01: desc" in once
+    assert "- [x] FT-02: already canonical" in once
+
+
+def test_real_evid_base_0002_parses_after_normalize():
+    from pathlib import Path
+    import re
+    p = Path(__file__).resolve().parent.parent / "outputs" / "_evid_base" / "WebTestBench_0002" / "result_extracted.md"
+    if not p.exists():
+        import pytest; pytest.skip("evid_base 0002 artifact not present")
+    cb = re.compile(r"^- \[\s*([xX ])\s*\]\s*(?:\*\*)?([A-Za-z0-9_-]+)(?:\*\*)?:\s*(.+)$")
+    norm = normalize_to_canonical(p.read_text())
+    ids = [m.group(2) for line in norm.splitlines() if (m := cb.match(line.strip()))]
+    assert len([i for i in ids if i.startswith(("FT-","CS-","IX-","CT-"))]) >= 20, f"expected ~22 items, got {ids}"

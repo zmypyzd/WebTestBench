@@ -14,6 +14,11 @@ _HEADER_RE = re.compile(r"^#{2,4}\s*(?:\*\*)?([A-Za-z]{2,3}-\d+)(?:\*\*)?\s*[:·
 _INLINE_RE = re.compile(r"^(?:- )?\*\*([A-Za-z]{2,3}-\d+):\s*(PASS|FAIL)\*\*\s*(.*)$", re.IGNORECASE)
 _STATUS_RE = re.compile(r"\b(PASS|FAIL)\b", re.IGNORECASE)
 _PHANTOM_RE = re.compile(r"^BUG-\d+$", re.IGNORECASE)
+# Checkbox line with a bold id and/or a non-colon separator (em/en-dash, hyphen)
+# e.g. "- [x] **FT-01** — desc"  ->  "- [x] FT-01: desc"
+_CHECKBOX_LOOSE_RE = re.compile(
+    r"^- \[\s*([xX ])\s*\]\s*\*{0,2}([A-Za-z]{2,3}-\d+)\*{0,2}\s*[:\-–—]\s*(.+)$"
+)
 _DEDICATED_STATUS_RE = re.compile(
     r"^\*{0,2}\s*(?:(?:status|result)\s*:\s*)?(pass|fail)\s*\*{0,2}$",
     re.IGNORECASE,
@@ -43,6 +48,13 @@ def normalize_to_canonical(text: str) -> str:
 
         if _CANON_RE.match(s):
             out.append(raw)
+            i += 1
+            continue
+
+        lm = _CHECKBOX_LOOSE_RE.match(s)
+        if lm:
+            box = "x" if lm.group(1).lower() == "x" else " "
+            out.append(f"- [{box}] {lm.group(2)}: {lm.group(3).strip()}")
             i += 1
             continue
 
