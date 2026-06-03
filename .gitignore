@@ -15,3 +15,4 @@ outputs/
 tmp/
 claude_code_cwd/
 .gstack/
+docs/session-handoff.md
