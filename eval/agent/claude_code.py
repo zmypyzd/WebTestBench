@@ -224,7 +224,8 @@ class ClaudeCodeWebTester(BaseAgent):
         prompt = USER_PROMPT["defect_reverify"].substitute(
             instruction=self.instruction, server_url=self.server_url, checklist=sub_checklist,
         )
-        self.event_log_stream.write(f"{'-'*20} REVERIFY PROMPT {'-'*20}\n{prompt}\n{'-'*50}\n")
+        if self.event_log_stream:
+            self.event_log_stream.write(f"{'-'*20} REVERIFY PROMPT {'-'*20}\n{prompt}\n{'-'*50}\n")
         options = self._get_browser_agent_options(max_turns=self.max_turns)
 
         result_message = ""
@@ -238,27 +239,19 @@ class ClaudeCodeWebTester(BaseAgent):
 
         # Degrade on any failure: reconciled := first pass (never destroy caught bugs).
         if num_turns > self.max_turns:
-            self.write_markdown(target_file, pass1_text)
-            self._mark_stage(stage=stage, status="error", message="reverify exceeded turn budget; kept first pass.")
-            self._emit_file_event(stage, target_file)
-            return True
+            return self._reverify_degrade(stage, target_file, pass1_text, "reverify exceeded turn budget; kept first pass.")
 
-        reverify_raw, _ = self._extract_final_result(result_message, stage="defect_detection")
+        reverify_raw, from_result_message = self._extract_final_result(result_message, stage=stage)
+        self._record_final_result_source(stage, from_result_message)
         self.write_markdown(self.result_reverify_raw_path, reverify_raw)
 
         if not self._has_required_result(reverify_raw):
-            self.write_markdown(target_file, pass1_text)
-            self._mark_stage(stage=stage, status="error", message="reverify output missing '# Test Result'; kept first pass.")
-            self._emit_file_event(stage, target_file)
-            return True
+            return self._reverify_degrade(stage, target_file, pass1_text, "reverify output missing '# Test Result'; kept first pass.")
 
         try:
             reconciled, stats = reconcile(pass1_text, reverify_raw)
         except Exception as exc:
-            self.write_markdown(target_file, pass1_text)
-            self._mark_stage(stage=stage, status="error", message=f"reconcile failed ({exc}); kept first pass.")
-            self._emit_file_event(stage, target_file)
-            return True
+            return self._reverify_degrade(stage, target_file, pass1_text, f"reconcile failed ({exc}); kept first pass.")
 
         self._emit_event(type_name="reverify_flips", stage=stage,
                          payload=dict(flipped=stats["flipped"], considered=stats["considered"]))
@@ -270,6 +263,13 @@ class ClaudeCodeWebTester(BaseAgent):
             return True
         self._mark_stage(stage=stage, status="error", message=f"Stage {stage} did not produce {target_file}.")
         return False
+
+    def _reverify_degrade(self, stage: str, target_file, pass1_text: str, reason: str) -> bool:
+        """Keep the first-pass result when re-verify cannot safely improve on it."""
+        self.write_markdown(target_file, pass1_text)
+        self._mark_stage(stage=stage, status="error", message=reason)
+        self._emit_file_event(stage, target_file)
+        return True
 
     # ------------------------------------------------------------------ #
     # Conversation Helpers
@@ -385,6 +385,7 @@ class ClaudeCodeWebTester(BaseAgent):
         check_final_fun = {
             "checklist_generation": self._has_required_checklist,
             "defect_detection": self._has_required_result,
+            "defect_reverify": self._has_required_result,
         }
         if stage in check_final_fun.keys():
             if check_final_fun[stage](result_text):
