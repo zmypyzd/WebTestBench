@@ -45,6 +45,10 @@ class ScoringPipeline:
         self.missing_result_ids: List[str] = []
         # Task IDs where matching returned no usable links.
         self.empty_match_ids: List[str] = []
+        # Task IDs where result_extracted.md exists but no items could be parsed
+        # (detection output format mismatch). These are flagged, NOT silently
+        # treated as an all-pass checklist (which would fabricate recall=0).
+        self.parse_error_ids: List[str] = []
 
         # Stable ordering used when rendering grouped statistics.
         self.ordered_categories = [
@@ -132,14 +136,15 @@ class ScoringPipeline:
         gold_items = result_bundle.get("gold_items", {})
         missing_result = metrics.get("missing_result", False)
         empty_match = metrics.get("empty_match", False)
+        parse_error = metrics.get("parse_error", False)
 
-        # Update overall metrics (includes missing/empty cases).
+        # Update overall metrics (includes missing/empty/parse-error cases).
         self._accumulate_metrics(aggregators['total_metrics'], metrics)
         aggregators['scored_count'] += 1
         aggregators['total_num_pred_item'] += int(metrics.get("num_pred_item", 0))
-        
-        # Update "no_missing" slice (exclude missing/empty records).
-        if (not missing_result) and (not empty_match):
+
+        # Update "no_missing" slice (exclude missing/empty/parse-error records).
+        if (not missing_result) and (not empty_match) and (not parse_error):
             self._accumulate_metrics(aggregators['total_metrics_no_missing'], metrics)
             aggregators['scored_count_no_missing'] += 1
             aggregators['total_num_pred_item_no_missing'] += int(metrics.get("num_pred_item", 0))
@@ -243,6 +248,8 @@ class ScoringPipeline:
                 "total": aggregators['total_count'],
                 "scored": scored_count,
                 "missing_result": len(self.missing_result_ids),
+                "empty_match": len(self.empty_match_ids),
+                "parse_error": len(self.parse_error_ids),
                 "scored_no_missing": scored_count_no_missing,
             },
         }
@@ -261,6 +268,13 @@ class ScoringPipeline:
             )
         if self.empty_match_ids:
             print_red(f"Empty matches for: {self.empty_match_ids}")
+        if self.parse_error_ids:
+            print_red(
+                f"Parse errors (result_extracted.md present but unparseable, "
+                f"flagged NOT all-pass) for: {self.parse_error_ids}"
+            )
+            self._write_json(self.output_root / "parse_errors.json",
+                             {"parse_error": self.parse_error_ids})
 
     def _compute_average_metrics(
         self, 
@@ -500,24 +514,51 @@ class ScoringPipeline:
         """
         Parse predicted checklist items from `result_extracted.md`.
 
-        Expected line format:
-            - [x] item_id: description
-        where `[x]` means pass and `[ ]` means fail.
+        Primary format (what the prompt asks for):
+            - [x] item_id: description     ([x] = pass, [ ] = fail)
+
+        Robust fallback: agents sometimes deviate to a header + status-marker
+        layout, e.g. `### FT-01: ...` followed by `**PASS**` / `**Status: FAIL**`.
+        Previously such output parsed to ZERO items and the record silently fell
+        back to an all-pass checklist (fabricating recall=0). We now recover it.
         """
+        text = result_path.read_text(encoding="utf-8")
+        return self._parse_pred_items(text)
+
+    def _parse_pred_items(self, text: str) -> Dict[str, dict]:
+        lines = text.splitlines()
         pred_items: Dict[str, dict] = {}
-        pattern = re.compile(r"^- \[\s*([xX ])\s*\]\s*(?:\*\*)?([A-Za-z0-9_-]+)(?:\*\*)?:\s*(.+)$")
-        
-        with result_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                match = pattern.match(line.strip())
-                if match:
-                    checked = match.group(1)
-                    item_id = match.group(2).strip()
-                    desc = match.group(3).strip()
-                    pred_items[item_id] = {
-                        "content": desc, 
-                        "pass": checked.lower() == "x"
-                    }
+
+        # 1) Canonical checkbox format.
+        cb = re.compile(r"^- \[\s*([xX ])\s*\]\s*(?:\*\*)?([A-Za-z0-9_-]+)(?:\*\*)?:\s*(.+)$")
+        for line in lines:
+            m = cb.match(line.strip())
+            if m:
+                pred_items[m.group(2).strip()] = {
+                    "content": m.group(3).strip(),
+                    "pass": m.group(1).lower() == "x",
+                }
+        if pred_items:
+            return pred_items
+
+        # 2) Fallback: '### <ID> ...' header + nearest following PASS/FAIL marker.
+        hdr = re.compile(r"^#{2,4}\s*(?:\*\*)?([A-Z]{2,3}-\d+)(?:\*\*)?\s*[:·–—\-]?\s*(.*)$")
+        status = re.compile(r"\b(PASS|FAIL)\b", re.IGNORECASE)
+        cur = None
+        seen_status: Dict[str, bool] = {}
+        for line in lines:
+            s = line.strip()
+            hm = hdr.match(s)
+            if hm:
+                cur = hm.group(1)
+                pred_items[cur] = {"content": hm.group(2).strip(), "pass": True}
+                seen_status[cur] = False
+                continue
+            if cur and not seen_status.get(cur):
+                sm = status.search(s)
+                if sm:
+                    pred_items[cur]["pass"] = sm.group(1).upper() == "PASS"
+                    seen_status[cur] = True
         return pred_items
 
     def _parse_checklist_md(self, checklist_path: Path) -> Dict[str, dict]:
@@ -861,14 +902,25 @@ class ScoringPipeline:
         else:
             pred_items = self._parse_pred_checklist(result_path)
             match_source = "result"
-            # If extraction yields no items, fallback to checklist for matching/coverage.
-            if not pred_items and checklist_path.exists():
+            # result_extracted.md exists but parsed to zero items => detection
+            # output format mismatch. Do NOT silently fall back to checklist.md
+            # (treating all items as pass) — that fabricates recall=0 and disguises
+            # a parse failure as a detection miss. Flag it and zero/exclude instead.
+            if not pred_items:
                 print_red(
-                    f"Empty extracted test items in result_extracted.md for {record_id}; "
-                    "falling back to checklist.md for matching/coverage"
+                    f"result_extracted.md for {record_id} exists but parsed 0 items "
+                    "(detection output format mismatch); flagging parse_error "
+                    "(NOT treating as all-pass)."
                 )
-                pred_items = self._parse_checklist_md(checklist_path)
-                match_source = "checklist"
+                self.parse_error_ids.append(record_id)
+                return self._create_empty_match_bundle(
+                    record=record,
+                    output_dir=output_dir,
+                    pred_items={},
+                    missing_result=False,
+                    gold_items=gold_items,
+                    parse_error=True,
+                )
 
         # Obtain LLM-based matches.
         match_ids = self._get_matches(
@@ -961,10 +1013,13 @@ class ScoringPipeline:
         pred_items: Dict[str, dict],
         missing_result: bool,
         gold_items: Dict[str, dict],
+        parse_error: bool = False,
     ) -> dict:
-        """Build a zero-score bundle for empty matching results.
+        """Build a zero-score bundle for empty matching / unparseable results.
 
         This record is included in `overall` but excluded from `overall_no_missing`.
+        `parse_error=True` flags a result_extracted.md that exists but yielded no
+        parseable items (format mismatch) rather than a genuine empty LLM match.
         """
         metrics = {
             "precision": 0.0,
@@ -972,8 +1027,11 @@ class ScoringPipeline:
             "f1": 0.0,
             "coverage": 0.0,
             "num_pred_item": len(pred_items),
-            "empty_match": True,
         }
+        if parse_error:
+            metrics["parse_error"] = True
+        else:
+            metrics["empty_match"] = True
         if missing_result:
             metrics["missing_result"] = True
 
