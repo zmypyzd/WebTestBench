@@ -53,6 +53,8 @@ def parse_args() -> argparse.Namespace:
                         help="API key for API server.")
     parser.add_argument("--model", required=True, type=str,
                         help="Model name, e.g., claude-sonnet-4-5.")
+    parser.add_argument("--reverify", action="store_true",
+                        help="Enable the blind second-pass defect_reverify stage (default off).")
 
     return parser.parse_args()
 
@@ -96,6 +98,7 @@ async def _run_record(
             local_project_dir=local_project_dir,
             output_dir=output_dir,
             event_log_stream=None,
+            reverify=args.reverify,
         )
         if probe_agent.result_extracted_path.exists():
             return
@@ -125,6 +128,7 @@ async def _run_record(
             output_dir=output_dir,
             event_log_stream=log_f,
             record=record,
+            reverify=args.reverify,
         )
         await agent.run()
 
