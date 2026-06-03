@@ -193,9 +193,18 @@ class ClaudeCodeWebTester(BaseAgent):
         if self._should_skip_stage(target_file, stage):
             return True
 
-        if not self.result_path.exists() or not self.checklist_path.exists():
-            self._mark_stage(stage=stage, status="error", message="reverify needs result.md + checklist.md.")
+        if not self.result_path.exists():
+            # No first-pass result to build on or fall back to: genuine hard error
+            # (baseline could not score this record either).
+            self._mark_stage(stage=stage, status="error", message="reverify needs result.md.")
             return False
+        if not self.checklist_path.exists():
+            # Can't build a sub-checklist, but we must not regress a scorable record to
+            # unscored: degrade to the first pass instead of aborting the pipeline.
+            return self._reverify_degrade(
+                stage, target_file, self._load_file_content(self.result_path),
+                "reverify: checklist.md missing; kept first pass.",
+            )
 
         self._write_stage_success(stage, True)
         self._mark_stage(stage=stage, status="running", message="🚀 Defect Re-Verify ...")
