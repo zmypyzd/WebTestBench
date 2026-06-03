@@ -7,10 +7,10 @@ set -uo pipefail
 cd /Users/zmy/intership/5-25/webtest_orginal/WebTestBench
 
 # ---- EDIT THESE ----
-DATA=data/WebTestBench/_p2abl.jsonl          # reuse the p2abl 6-record subset
+DATA=data/WebTestBench/_reverify3.jsonl       # 3-record A/B (0001 + the two known CS-miss records 0002, 0006)
 PROJ=data/WebTestBench/web_applications
 SRC=outputs/p2abl-base-r1                    # clean BASE-arm run (6/6) holds checklist.md + result.md
-RECS="0001 0002 0005 0006 0007 0024"         # the p2abl records
+RECS="0001 0002 0006"                         # 0002/0006 = handoff's covered-but-PASS CS misses (acid test)
 MODEL=sonnet                                 # reverify (browser) model — native Claude CLI creds
 ABASE=""                                     # empty -> native Claude CLI auth (as p2abl ran)
 AKEY=""                                      # empty -> native Claude CLI auth

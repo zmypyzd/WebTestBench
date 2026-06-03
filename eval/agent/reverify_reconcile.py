@@ -34,6 +34,21 @@ def filter_to_classes(ids: Set[str], classes: Tuple[str, ...]) -> Set[str]:
     return {tid for tid in ids if tid.split("-", 1)[0].upper() in wanted}
 
 
+def has_canonical_items(test_result_text: str) -> bool:
+    """True if the '# Test Result' section has at least one canonical checkbox item.
+
+    Used to tell apart two empty-PASS situations: a result that is genuinely all-FAIL
+    (canonical items exist, none PASS -> quiet skip) versus a result whose format is
+    non-canonical so the parser sees nothing (e.g. heading-style '### FT-01 ... PASS'
+    that scoring's fallback handles but reverify does not -> loud 'unparseable' skip).
+    """
+    section = _extract_test_result_section(test_result_text)
+    for line in section.splitlines():
+        if _CHECKBOX.match(line.strip()):
+            return True
+    return False
+
+
 def parse_pass_items(test_result_text: str) -> Set[str]:
     """TEST-IDs marked PASS ('- [X]') within the '# Test Result' section only."""
     section = _extract_test_result_section(test_result_text)

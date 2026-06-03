@@ -11,7 +11,7 @@ from claude_agent_sdk import (
 )
 
 from agent import APIConfig, BaseAgent
-from agent.reverify_reconcile import parse_pass_items, build_sub_checklist, reconcile, filter_to_classes
+from agent.reverify_reconcile import parse_pass_items, build_sub_checklist, reconcile, filter_to_classes, has_canonical_items
 from prompt import USER_PROMPT
 from tools import PlaywrightTools
 from utils import *
@@ -214,17 +214,31 @@ class ClaudeCodeWebTester(BaseAgent):
 
         pass1_text = self._load_file_content(self.result_path)
         checklist_md = self._load_file_content(self.checklist_path)
+
+        # Non-canonical first-pass format (e.g. heading-style '### FT-01 ... PASS') is
+        # invisible to our checkbox parser, so reverify cannot run on it. Surface this
+        # LOUDLY instead of silently looking like "ran, nothing to flip" — detection
+        # format variance is an upstream gap, not a clean no-op.
+        if not has_canonical_items(pass1_text):
+            self._emit_event(type_name="reverify_unparseable", stage=stage,
+                             payload=dict(result_chars=len(pass1_text)))
+            self._mark_stage(stage=stage, status="skip",
+                             message="reverify: first-pass result not in canonical checkbox format; skipped (kept first pass).")
+            self.write_markdown(target_file, pass1_text)
+            self._emit_file_event(stage, target_file)
+            return True
+
         pass_ids = parse_pass_items(pass1_text)
         # Scope re-verification to the classes where detection actually misjudges
         # (CS/IX per the P2 diagnosis). FT/CT re-verification was empirically pure
         # FP risk with no recall gain (n=1 smoke 0002: FT-02 flipped as a false alarm).
         pass_ids = filter_to_classes(pass_ids, self.reverify_classes)
 
-        # Nothing PASSed -> nothing to re-verify; reconciled == first pass.
+        # Canonical items exist but none in scope PASS -> genuinely nothing to re-verify.
         if not pass_ids:
             self.write_markdown(target_file, pass1_text)
             self._emit_file_event(stage, target_file)
-            print_green("✅ Re-Verify skipped (no PASS items).")
+            print_green("✅ Re-Verify skipped (no in-scope PASS items).")
             return True
 
         sub_checklist, dropped = build_sub_checklist(checklist_md, pass_ids)

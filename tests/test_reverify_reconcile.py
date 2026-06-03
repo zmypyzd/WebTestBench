@@ -146,3 +146,16 @@ def test_filter_to_classes_keeps_only_named_classes_case_insensitive():
     assert filter_to_classes(ids, ("CS", "IX")) == {"CS-03", "IX-04", "cs-99"}
     assert filter_to_classes(ids, ("FT",)) == {"FT-01"}
     assert filter_to_classes(set(), ("CS", "IX")) == set()
+
+
+from agent.reverify_reconcile import has_canonical_items
+
+
+def test_has_canonical_items_distinguishes_format():
+    # canonical checkbox present (all-fail still counts as canonical)
+    assert has_canonical_items("# Test Result\n- [ ] CS-01: x\n") is True
+    assert has_canonical_items("# Test Result\n- [X] FT-01: x\n") is True
+    # heading-style output (scoring's fallback parses it, reverify does not) -> not canonical
+    assert has_canonical_items("# Test Result\n### FT-01: PASS — works\n### CS-02: FAIL\n") is False
+    # inline-bold status (no checkbox) -> not canonical
+    assert has_canonical_items("**IX-04: PASS** — dashboard updated\n") is False
