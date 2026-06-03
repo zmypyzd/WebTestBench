@@ -103,3 +103,19 @@ def test_prose_still_not_treated_as_status_with_result_form():
     text = "### FT-01: works\nThe result could fail in edge cases, noted for reference.\n### FT-02: ok\n**Result: PASS**\n"
     out = normalize_to_canonical(text)
     assert "- [x] FT-01: works" in out  # prose 'fail' must not flip it
+
+
+def test_scoring_parse_pred_items_uses_normalize_when_enabled():
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "eval"))
+    import scoring
+    text = "### FT-01: works\n**Result: PASS**\n### BUG-01 · CS-02: x\n"
+
+    class _P:
+        canonicalize = True
+        _parse_pred_items = scoring.ScoringPipeline._parse_pred_items
+
+    items = _P._parse_pred_items(_P(), text)
+    assert "FT-01" in items and items["FT-01"]["pass"] is True
+    assert not any(k.upper().startswith("BUG") for k in items)

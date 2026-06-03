@@ -10,6 +10,7 @@ import requests
 from openpyxl import Workbook
 
 from agent.base_agent import APIConfig
+from canonicalize import normalize_to_canonical
 from prompt.match_item import PROMPT_MATCH_ITEM
 from utils import *
 
@@ -33,12 +34,14 @@ class ScoringPipeline:
         api_config: APIConfig,
         version: str,
         use_checklist_fallback: bool = False,
+        canonicalize: bool = False,
     ) -> None:
         self.dataset_path = dataset_path
         self.output_root = output_root
         self.version = version
         self.api_config = api_config
         self.use_checklist_fallback = use_checklist_fallback
+        self.canonicalize = canonicalize
         self.dataset = self._load_dataset()
 
         # Task IDs where result files are missing.
@@ -526,6 +529,8 @@ class ScoringPipeline:
         return self._parse_pred_items(text)
 
     def _parse_pred_items(self, text: str) -> Dict[str, dict]:
+        if getattr(self, "canonicalize", False):
+            text = normalize_to_canonical(text)
         lines = text.splitlines()
         pred_items: Dict[str, dict] = {}
 
@@ -551,6 +556,9 @@ class ScoringPipeline:
             hm = hdr.match(s)
             if hm:
                 cur = hm.group(1)
+                if re.match(r"BUG-?\d+$", cur, re.IGNORECASE):
+                    cur = None
+                    continue
                 pred_items[cur] = {"content": hm.group(2).strip(), "pass": True}
                 seen_status[cur] = False
                 continue
@@ -1129,6 +1137,12 @@ def parse_args():
         type=lambda v: str(v).lower() in ("1", "true", "yes", "y", "t"),
         help="Allow using checklist.md to match/compute coverage when result_extracted.md is missing. Can be used as a flag or with explicit True/False.",
     )
+    parser.add_argument(
+        "--canonicalize", action="store_true",
+        help="Normalize detection output to canonical checkbox "
+             "form (strip phantom BUG-xx, convert heading/inline) "
+             "before matching. Default off for A/B ablation.",
+    )
     return parser.parse_args()
 
 
@@ -1154,6 +1168,7 @@ def main():
         api_config=api_config,
         version=args.version,
         use_checklist_fallback=args.use_checklist_fallback,
+        canonicalize=args.canonicalize,
     )
     pipeline.run()
 
