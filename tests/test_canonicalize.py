@@ -39,3 +39,31 @@ def test_count_phantom_ids():
     text = "### BUG-01 · CS-02: x\n### BUG-05 · CT-02: y\n- [ ] CS-02: z\n"
     assert count_phantom_ids(text) == 2
     assert count_phantom_ids("- [x] FT-01: clean\n") == 0
+
+
+def test_empty_string_is_safe():
+    assert normalize_to_canonical("") == ""
+    assert count_phantom_ids("") == 0
+
+
+def test_heading_with_no_status_anywhere_defaults_to_pass():
+    out = normalize_to_canonical("### FT-09: organizer can create event\n")
+    assert "- [x] FT-09: organizer can create event" in out
+
+
+def test_body_prose_fail_does_not_flip_prior_heading_pass():
+    text = (
+        "### FT-01: upload succeeds\n"
+        "This sentence mentions the FAIL case for reference only.\n"
+        "### FT-02: export works\n"
+        "PASS\n"
+    )
+    out = normalize_to_canonical(text)
+    assert "- [x] FT-01: upload succeeds" in out   # not flipped to FAIL by prose
+    assert "- [x] FT-02: export works" in out
+
+
+def test_heading_form_is_idempotent():
+    once = normalize_to_canonical("### IX-03: live total updates\n**PASS**\n")
+    twice = normalize_to_canonical(once)
+    assert twice == once

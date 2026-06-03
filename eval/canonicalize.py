@@ -13,7 +13,8 @@ _CANON_RE = re.compile(r"^- \[\s*([xX ])\s*\]\s*(?:\*\*)?([A-Za-z0-9_-]+)(?:\*\*
 _HEADER_RE = re.compile(r"^#{2,4}\s*(?:\*\*)?([A-Za-z]{2,3}-\d+)(?:\*\*)?\s*[:·–—\-]?\s*(.*)$")
 _INLINE_RE = re.compile(r"^(?:- )?\*\*([A-Za-z]{2,3}-\d+):\s*(PASS|FAIL)\*\*\s*(.*)$", re.IGNORECASE)
 _STATUS_RE = re.compile(r"\b(PASS|FAIL)\b", re.IGNORECASE)
-_PHANTOM_RE = re.compile(r"^BUG-?\d+$", re.IGNORECASE)
+_PHANTOM_RE = re.compile(r"^BUG-\d+$", re.IGNORECASE)
+_DEDICATED_STATUS_RE = re.compile(r"^\*{0,2}(?:status:\s*)?(pass|fail)\*{0,2}$", re.IGNORECASE)
 
 
 def count_phantom_ids(text: str) -> int:
@@ -65,7 +66,7 @@ def normalize_to_canonical(text: str) -> str:
                 status = same.group(1).upper()
             else:
                 for j in range(i + 1, min(i + 4, n)):
-                    nxt = _STATUS_RE.search(lines[j])
+                    nxt = _DEDICATED_STATUS_RE.match(lines[j].strip())
                     if nxt:
                         status = nxt.group(1).upper()
                         break
