@@ -7,7 +7,7 @@ import re
 
 _PASS_RE = re.compile(r"^- \[[xX]\]\s*(?:\*\*)?([A-Za-z0-9_-]+)(?:\*\*)?:")
 _FAIL_RE = re.compile(r"^- \[\s\]\s*(?:\*\*)?([A-Za-z0-9_-]+)(?:\*\*)?:")
-_EVID_RE = re.compile(r"^- *evidence:\s*(.*)$", re.IGNORECASE)
+_EVID_RE = re.compile(r"^-?\s*\*{0,2}evidence:\*{0,2}\s*(.*)$", re.IGNORECASE)
 
 
 def find_unsupported_pass(result_text: str) -> list:

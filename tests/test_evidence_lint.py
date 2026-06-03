@@ -49,3 +49,27 @@ def test_multiple_items_mixed():
 """
     # FT-02 is the only PASS without evidence
     assert find_unsupported_pass(text) == ["FT-02"]
+
+
+def test_bold_evidence_form_is_recognized():
+    text = """# Test Result
+- [X] FT-01: browse works
+  - **Evidence:** grid shows 9 event cards
+"""
+    assert find_unsupported_pass(text) == []
+
+
+def test_evidence_without_leading_dash_is_recognized():
+    text = """# Test Result
+- [X] FT-01: browse works
+  Evidence: confirmed via DOM
+"""
+    assert find_unsupported_pass(text) == []
+
+
+def test_bold_evidence_with_empty_value_is_still_flagged():
+    text = """# Test Result
+- [X] FT-02: search
+  - **Evidence:**
+"""
+    assert find_unsupported_pass(text) == ["FT-02"]
