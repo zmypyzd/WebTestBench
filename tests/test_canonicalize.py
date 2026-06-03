@@ -1,4 +1,11 @@
+import re
+from pathlib import Path
+
 from canonicalize import normalize_to_canonical, count_phantom_ids
+
+_REPO = Path(__file__).resolve().parent.parent
+_R0006 = _REPO / "outputs" / "reverify-off" / "WebTestBench_0006" / "result_extracted.md"
+_CANON = re.compile(r"^- \[\s*([xX ])\s*\]\s*(?:\*\*)?([A-Za-z0-9_-]+)(?:\*\*)?:\s*(.+)$")
 
 
 def test_canonical_lines_pass_through_unchanged():
@@ -67,3 +74,16 @@ def test_heading_form_is_idempotent():
     once = normalize_to_canonical("### IX-03: live total updates\n**PASS**\n")
     twice = normalize_to_canonical(once)
     assert twice == once
+
+
+def test_0006_artifact_yields_canonical_items_without_phantoms():
+    if not _R0006.exists():
+        import pytest
+        pytest.skip("0006 artifact not present in this checkout")
+    raw = _R0006.read_text(encoding="utf-8")
+    assert count_phantom_ids(raw) >= 1  # baseline really does contain phantoms
+    norm = normalize_to_canonical(raw)
+    ids = [m.group(2) for line in norm.splitlines() if (m := _CANON.match(line.strip()))]
+    assert ids, "normalize must yield canonical items for the 0006 heading-form output"
+    assert not any(re.match(r"BUG-?\d+", i, re.IGNORECASE) for i in ids), "no phantom BUG ids survive"
+    assert any(i.startswith(("FT-", "CS-", "IX-", "CT-")) for i in ids)
