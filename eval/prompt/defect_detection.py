@@ -90,3 +90,16 @@ $checklist
 # Output
 """)
 
+EVIDENCE_REQUIREMENT = """
+
+# Evidence Requirement (STRICT)
+For EVERY checklist item — PASS or FAIL — append an `- Evidence:` sub-line stating the concrete DOM fact you actually observed and used to judge (e.g. `grid shows "No events found"`, `count 5 -> 5 after submit`, `toast "Reservation Confirmed!" appeared`). You MUST NOT mark an item PASS unless its Evidence line records a state you actually observed that satisfies the Expected. If you did not observe it, mark FAIL and say why in the Bug Report. An item marked PASS without a concrete Evidence line is invalid.
+
+Updated item template (PASS example):
+```markdown
+- [X] TEST-ID: [original Description]
+  - Action: [original Action]
+  - Expected: [original Expected]
+  - Evidence: [the concrete DOM fact you observed]
+```
+"""
