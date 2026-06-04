@@ -8,3 +8,5 @@ def test_mutation_prompts_registered_and_substitutable():
     assert "fault class `CS`" in gen
     catch = USER_PROMPT["mutation_catch"].substitute(injected="a", result="b")
     assert "CAUGHT" in catch
+    assert "$" not in gen
+    assert "$" not in catch
