@@ -49,3 +49,8 @@ def test_aggregate_denominator_excludes_invalid_and_by_class():
     assert agg["by_class"]["CS"]["catch_rate"] == 0.5    # 1 of 2
     assert agg["by_class"]["IX"]["catch_rate"] == 1.0    # 1 of 1
     assert "FT" not in agg["by_class"]                   # no valid FT mutants
+
+
+def test_aggregate_all_invalid_returns_none_rate():
+    agg = ml.aggregate([{"fault_class": "CS", "validity": "invalid", "caught": False}])
+    assert agg["valid"] == 0 and agg["catch_rate"] is None and agg["by_class"] == {}
