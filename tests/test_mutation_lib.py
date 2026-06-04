@@ -97,3 +97,9 @@ def test_parse_catch_reads_verdict():
 
 def test_parse_catch_defaults_false_on_garbage():
     assert ml.parse_catch("no json here").get("caught") is False
+
+
+def test_parse_catch_defaults_false_on_broken_json():
+    # a "{...}" containing "caught" is matched but is not valid JSON -> fail safe
+    v = ml.parse_catch('{"caught": true, "reason": broken}')
+    assert v["caught"] is False

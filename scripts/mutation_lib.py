@@ -91,6 +91,10 @@ def parse_injection(md: str) -> tuple[dict, str, str]:
     if not jm:
         raise ValueError("no json injection record found")
     record = json.loads(jm.group(1))
+    # Known limitation: a literal ``` inside the file content truncates the
+    # non-greedy match. Degrades safely -> truncated file fails to deploy ->
+    # the mutant is marked invalid and excluded from the catch-rate denominator
+    # (never inflates the rate). Acceptable for the pilot; revisit before scale.
     fm = re.search(r"```file:([^\n]+)\n(.*?)```", md, re.DOTALL)
     if not fm:
         raise ValueError("no file block found")
