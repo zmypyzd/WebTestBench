@@ -54,3 +54,19 @@ def test_aggregate_denominator_excludes_invalid_and_by_class():
 def test_aggregate_all_invalid_returns_none_rate():
     agg = ml.aggregate([{"fault_class": "CS", "validity": "invalid", "caught": False}])
     assert agg["valid"] == 0 and agg["catch_rate"] is None and agg["by_class"] == {}
+
+
+def test_copy_app_sources_excludes_node_modules_and_symlinks(tmp_path):
+    src = tmp_path / "app"
+    (src / "src").mkdir(parents=True)
+    (src / "src" / "App.tsx").write_text("export default 1")
+    (src / "node_modules" / "dep").mkdir(parents=True)
+    (src / "node_modules" / "dep" / "index.js").write_text("// big dep")
+
+    dst = tmp_path / "copy"
+    ml.copy_app_sources(src, dst)
+
+    assert (dst / "src" / "App.tsx").read_text() == "export default 1"
+    nm = dst / "node_modules"
+    assert nm.is_symlink()                       # not a real copy
+    assert (nm / "dep" / "index.js").exists()     # resolves to the original

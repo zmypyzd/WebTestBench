@@ -69,3 +69,16 @@ def aggregate(records: list[dict]) -> dict:
         "catch_rate": round(n_caught / n_valid, 3) if n_valid else None,
         "by_class": by_class,
     }
+
+
+def copy_app_sources(src: Path, dst: Path) -> None:
+    """Copy app source to dst EXCLUDING node_modules, then symlink node_modules
+    back to the original (read-only, shared). Mutations only touch source, so
+    dependencies are safely shared; per-mutant copy cost drops to near-zero (D5)."""
+    src, dst = Path(src), Path(dst)
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("node_modules", ".git"))
+    src_nm = src / "node_modules"
+    if src_nm.exists():
+        os.symlink(src_nm.resolve(), dst / "node_modules")
