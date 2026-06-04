@@ -82,3 +82,32 @@ def copy_app_sources(src: Path, dst: Path) -> None:
     src_nm = src / "node_modules"
     if src_nm.exists():
         os.symlink(src_nm.resolve(), dst / "node_modules")
+
+
+def parse_injection(md: str) -> tuple[dict, str, str]:
+    """Parse the generator output -> (record dict, file path, new file content).
+    Raises ValueError if either block is missing/malformed."""
+    jm = re.search(r"```json\s*(\{.*?\})\s*```", md, re.DOTALL)
+    if not jm:
+        raise ValueError("no json injection record found")
+    record = json.loads(jm.group(1))
+    fm = re.search(r"```file:([^\n]+)\n(.*?)```", md, re.DOTALL)
+    if not fm:
+        raise ValueError("no file block found")
+    path = fm.group(1).strip()
+    content = fm.group(2)
+    return record, path, content
+
+
+def parse_catch(md: str) -> dict:
+    """Parse a judge verdict. Defaults to caught=false on any parse failure
+    (conservative: an unparseable verdict must not count as a catch)."""
+    m = re.search(r"\{[^{}]*\"caught\"[^{}]*\}", md, re.DOTALL)
+    if not m:
+        return {"caught": False, "matched_item": None, "reason": "unparseable verdict"}
+    try:
+        v = json.loads(m.group(0))
+        v["caught"] = bool(v.get("caught", False))
+        return v
+    except Exception:
+        return {"caught": False, "matched_item": None, "reason": "json error"}

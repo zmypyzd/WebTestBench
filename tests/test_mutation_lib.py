@@ -70,3 +70,30 @@ def test_copy_app_sources_excludes_node_modules_and_symlinks(tmp_path):
     nm = dst / "node_modules"
     assert nm.is_symlink()                       # not a real copy
     assert (nm / "dep" / "index.js").exists()     # resolves to the original
+
+
+def test_parse_injection_extracts_record_and_file():
+    md = '''Here you go:
+```json
+{"description": "total wrong", "file": "src/Cart.tsx", "fault_class": "CS", "repro_steps": "1. add item"}
+```
+```file:src/Cart.tsx
+export const x = 2
+```
+'''
+    rec, path, content = ml.parse_injection(md)
+    assert rec["fault_class"] == "CS"
+    assert rec["file"] == "src/Cart.tsx"
+    assert path == "src/Cart.tsx"
+    assert content.strip() == "export const x = 2"
+
+
+def test_parse_catch_reads_verdict():
+    md = 'verdict:\n```json\n{"caught": true, "matched_item": "EX-01", "reason": "same bug"}\n```'
+    v = ml.parse_catch(md)
+    assert v["caught"] is True
+    assert v["matched_item"] == "EX-01"
+
+
+def test_parse_catch_defaults_false_on_garbage():
+    assert ml.parse_catch("no json here").get("caught") is False
