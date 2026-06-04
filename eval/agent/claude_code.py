@@ -67,9 +67,10 @@ class ClaudeCodeWebTester(BaseAgent):
 
     async def run(self) -> bool:
         """Run checklist generation then execution."""
-        eval_done = self._should_skip_stage(self.result_extracted_path, stage="eval")
+        eval_done = self.result_extracted_path.exists()
         hunt_pending = self.hunt_rounds > 0 and not self.bugs_path.exists()
         if eval_done and not hunt_pending:
+            self._should_skip_stage(self.result_extracted_path, stage="eval")  # emit skip event only when actually skipping
             return True
         
         self._log_instruction()
