@@ -8,6 +8,7 @@ from .defect_detection import PROMPT_DEFECT_DETECTION
 from .defect_detection_based_gold import PROMPT_DEFECT_DETECTION_BASED_GOLD
 from .defect_reverify import PROMPT_DEFECT_REVERIFY
 from .match_item import PROMPT_MATCH_ITEM
+from .defect_hunt import PROMPT_DEFECT_HUNT
 
 
 
@@ -17,6 +18,7 @@ USER_PROMPT = {
     "defect_detection_based_gold": PROMPT_DEFECT_DETECTION_BASED_GOLD,
     "defect_reverify": PROMPT_DEFECT_REVERIFY,
     "match_item": PROMPT_MATCH_ITEM,
+    "defect_hunt": PROMPT_DEFECT_HUNT,
 }
 
 __all__ = [
@@ -25,4 +27,5 @@ __all__ = [
     "PROMPT_DEFECT_DETECTION_BASED_GOLD",
     "PROMPT_DEFECT_REVERIFY",
     "PROMPT_MATCH_ITEM",
+    "PROMPT_DEFECT_HUNT",
 ]
