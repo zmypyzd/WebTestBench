@@ -51,8 +51,10 @@ High/Critical bug, OR (b) you are near your turn budget. Round focus: R1 normal 
 project hygiene.
 
 # Output Format (your FINAL message — emitted ALL AT ONCE, not appended to any file)
-Emit the COMPLETE report as your final message under a top-level `# Bug Report`
-header. The harness writes it to BUGS.md; you must NOT write files yourself.
+Emit the COMPLETE report as your final message. Your message MUST BEGIN directly
+with the top-level `# Bug Report` header — NO preamble, NO "Here is the report"
+sentence, nothing before the header. The harness writes it to BUGS.md; you must
+NOT write files yourself.
 
 ```markdown
 # Bug Report

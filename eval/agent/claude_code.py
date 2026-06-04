@@ -363,7 +363,9 @@ class ClaudeCodeWebTester(BaseAgent):
             else:
                 final_result, from_result_message = self._extract_final_result(result_message, stage=stage)
                 self._record_final_result_source(stage, from_result_message)
-                self.write_markdown(target_file, final_result)
+                # Models often prepend a conversational preamble ("Here is the report:")
+                # before the actual report; trim it so BUGS.md starts at the header.
+                self.write_markdown(target_file, self._slice_bug_report(final_result))
 
             if self._verify_output_file(target_file):
                 self._emit_file_event(stage, target_file)
