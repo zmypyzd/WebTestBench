@@ -28,3 +28,17 @@ def test_empty_and_none_fail():
     fn = _validator()
     assert fn(None, "") is False
     assert fn(None, None) is False
+
+
+def test_zero_bugs_fallback_passes():
+    # "# Bug Report" + "## BUG-000: none found" is the valid zero-bugs fallback
+    fn = _validator()
+    text = "# Bug Report\n\n## Coverage Snapshot\n\n## BUG-000: none found\n- tried boundaries\n"
+    assert fn(None, text) is True
+
+
+def test_plain_body_bug_line_without_heading_fails():
+    # a non-heading line that merely starts with BUG- must NOT count as a bug block
+    fn = _validator()
+    text = "# Bug Report\n\nThe text mentions BUG-001 in prose but has no heading.\n"
+    assert fn(None, text) is False

@@ -428,7 +428,7 @@ class BaseAgent:
             s = line.strip()
             if s.startswith("#") and s.lstrip("#").strip().startswith("Bug Report"):
                 has_header = True
-            if s.lstrip("#").strip().upper().startswith("BUG-"):
+            if s.startswith("#") and s.lstrip("#").strip().upper().startswith("BUG-"):
                 has_bug = True
         return has_header and has_bug
 
