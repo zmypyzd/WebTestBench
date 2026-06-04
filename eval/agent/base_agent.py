@@ -53,6 +53,7 @@ class BaseAgent:
         self.result_extracted_path = self.output_dir / "result_extracted.md"
         self.session_meta_path = self.output_dir / "session_meta.json"
         self.result_reverified_path = self.output_dir / "result_reverified.md"
+        self.bugs_path = self.output_dir / "BUGS.md"
         # Set True by subclasses when the --reverify gate is on; gates final_result_path.
         self.reverify_enabled: bool = False
         self.require_evidence: bool = require_evidence
@@ -416,5 +417,19 @@ class BaseAgent:
                 if s.startswith("#") and s.lstrip("#").strip().startswith("Test Result"):
                     return True
         return False
-    
-    
+
+    def _has_required_bugs(self, content: str | None) -> bool:
+        """Valid hunt output: a `# Bug Report` heading AND at least one BUG-NNN block."""
+        if not content:
+            return False
+        has_header = False
+        has_bug = False
+        for line in content.splitlines():
+            s = line.strip()
+            if s.startswith("#") and s.lstrip("#").strip().startswith("Bug Report"):
+                has_header = True
+            if s.lstrip("#").strip().upper().startswith("BUG-"):
+                has_bug = True
+        return has_header and has_bug
+
+
