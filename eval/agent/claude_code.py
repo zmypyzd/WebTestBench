@@ -324,6 +324,8 @@ class ClaudeCodeWebTester(BaseAgent):
         self._emit_file_event(stage, target_file)
         return True
 
+    # Best-effort, dual-track stage: runs LAST (server still alive), always returns True so it
+    # never flips the pipeline success flag, and writes only BUGS.md (never feeds scoring).
     async def defect_hunt(self) -> bool:
         stage = "defect_hunt"
         target_file = self.bugs_path
@@ -366,7 +368,7 @@ class ClaudeCodeWebTester(BaseAgent):
             self._emit_file_event(stage, target_file)
             print_green("✅ Defect Hunt Completed.")
         else:
-            self._mark_stage(stage=stage, status="error", message=f"Stage {stage} produced no {target_file}.")
+            self._mark_stage(stage=stage, status="error", message=f"Stage {stage} did not produce {target_file}.")
         return True
 
     # ------------------------------------------------------------------ #
