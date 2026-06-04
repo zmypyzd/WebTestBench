@@ -16,6 +16,7 @@ LOG_ROOT=./logs/eval
 # ======================================================================
 BASE_PORT=6000
 
+# defect_hunt produces an extra BUGS.md per record (default --hunt_rounds 3; pass --hunt_rounds 0 to disable). It does not affect scoring.
 python eval/run_agent.py \
     --agent claude_code \
     --data_jsonl_path $DATA_JSONL_PATH \

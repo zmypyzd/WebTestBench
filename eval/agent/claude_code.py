@@ -336,39 +336,42 @@ class ClaudeCodeWebTester(BaseAgent):
         if self._should_skip_stage(target_file, stage):
             return True
 
-        self._write_stage_success(stage, True)
-        self._mark_stage(stage=stage, status="running", message="🔪 Defect Hunt (chaos-qa) ...")
+        try:
+            self._write_stage_success(stage, True)
+            self._mark_stage(stage=stage, status="running", message="🔪 Defect Hunt (chaos-qa) ...")
 
-        project_dir = os.path.abspath(self.local_project_dir) if self.local_project_dir else "."
-        prompt = USER_PROMPT["defect_hunt"].substitute(
-            instruction=self.instruction,
-            server_url=self.server_url,
-            project_dir=project_dir,
-            hunt_rounds=self.hunt_rounds,
-        )
-        options = self._get_browser_agent_options(max_turns=self.max_turns)
+            project_dir = os.path.abspath(self.local_project_dir) if self.local_project_dir else "."
+            prompt = USER_PROMPT["defect_hunt"].substitute(
+                instruction=self.instruction,
+                server_url=self.server_url,
+                project_dir=project_dir,
+                hunt_rounds=self.hunt_rounds,
+            )
+            options = self._get_browser_agent_options(max_turns=self.max_turns)
 
-        result_message = ""
-        num_turns = 0
-        async for message in query(prompt=prompt, options=options):
-            self._log_session_id(message, session_name=stage, stage=stage, prompt=prompt)
-            self._handle_message(message, stage=stage)
-            if isinstance(message, ResultMessage):
-                result_message = message.result
-                num_turns = message.num_turns
+            result_message = ""
+            num_turns = 0
+            async for message in query(prompt=prompt, options=options):
+                self._log_session_id(message, session_name=stage, stage=stage, prompt=prompt)
+                self._handle_message(message, stage=stage)
+                if isinstance(message, ResultMessage):
+                    result_message = message.result
+                    num_turns = message.num_turns
 
-        if num_turns > self.max_turns:
-            self.write_markdown(target_file, "")
-        else:
-            final_result, from_result_message = self._extract_final_result(result_message, stage=stage)
-            self._record_final_result_source(stage, from_result_message)
-            self.write_markdown(target_file, final_result)
+            if num_turns > self.max_turns:
+                self.write_markdown(target_file, "")
+            else:
+                final_result, from_result_message = self._extract_final_result(result_message, stage=stage)
+                self._record_final_result_source(stage, from_result_message)
+                self.write_markdown(target_file, final_result)
 
-        if self._verify_output_file(target_file):
-            self._emit_file_event(stage, target_file)
-            print_green("✅ Defect Hunt Completed.")
-        else:
-            self._mark_stage(stage=stage, status="error", message=f"Stage {stage} did not produce {target_file}.")
+            if self._verify_output_file(target_file):
+                self._emit_file_event(stage, target_file)
+                print_green("✅ Defect Hunt Completed.")
+            else:
+                self._mark_stage(stage=stage, status="error", message=f"Stage {stage} did not produce {target_file}.")
+        except Exception as exc:
+            self._mark_stage(stage=stage, status="error", message=f"Stage {stage} raised and was suppressed (best-effort): {exc}")
         return True
 
     # ------------------------------------------------------------------ #
