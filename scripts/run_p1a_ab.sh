@@ -61,10 +61,17 @@ run_detect () {  # $1 = version label — shards the mini set across $JOBS paral
       --hunt_rounds 0 &
     pids+=("$!")
   done
-  local rc=0
-  for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || rc=1; done
+  local failed=0
+  for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || failed=$((failed+1)); done
   rm -f "${prefix}"*
-  return $rc
+  # Tolerate per-shard failures (transient API/socket errors, run_agent sys.exit(1)).
+  # The pipeline is idempotent: completed records skip on re-run, and scoring's
+  # --use_checklist_fallback covers any record left without a result. Never abort
+  # the whole A/B for one bad record.
+  if [ "$failed" -gt 0 ]; then
+    echo "WARN: $failed/$JOBS shard(s) for '$ver' exited non-zero (likely transient). Continuing; re-run to backfill."
+  fi
+  return 0
 }
 
 score () {  # $1 = version label
@@ -91,6 +98,13 @@ done
 
 echo "### [3/5] TREATMENT — P1-A detection prompt -> run $EXP_VER"
 run_detect "$EXP_VER"
+
+echo "### completeness check (result_extracted.md per version)"
+exp_total="$(grep -c . "$DATA")"
+for v in "$BASE_VER" "$EXP_VER"; do
+  got="$(ls "$OUT/$v"/*/result_extracted.md 2>/dev/null | wc -l | tr -d ' ')"
+  echo "  $v: $got/$exp_total records have result_extracted.md"
+done
 
 echo "### [4/5] SCORING both (judge=MiniMax-M3, fixed)"
 score "$BASE_VER"
