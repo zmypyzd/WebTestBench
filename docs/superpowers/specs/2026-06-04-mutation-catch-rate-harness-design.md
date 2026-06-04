@@ -115,6 +115,7 @@ This is the "engineered enough" coverage for an eval script: test what determine
 2. **Mutation realism vs the gold distribution:** LLM mutants may not resemble the bug types gold/real users hit. The metric measures catch-rate on *our* fault distribution; keep the fault-class spread visible so skew is detectable.
 3. **Observability false-negatives:** a `suspect`-flagged but actually-valid mutant shrinks the denominator. Acceptable for v1 given the explicit flagging; tighten later.
 4. **Cost:** each mutant = one full browser+150-turn detection run. Scaling beyond the pilot needs an explicit budget decision.
+5. **Generator-output parsing (impl-review):** `parse_injection`'s file-block regex truncates if the injected file content itself contains a literal ` ``` `. This degrades *safely* — a truncated file fails to compile → deploy fails → the mutant is marked `invalid` and excluded from the catch-rate denominator (never inflates the rate). Acceptable for the pilot; revisit (e.g. length-prefixed or sentinel-delimited file blocks) before scaling to richer apps.
 
 ## 10. Eng-review decisions (2026-06-04, /plan-eng-review)
 
