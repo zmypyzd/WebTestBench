@@ -115,3 +115,68 @@ def parse_catch(md: str) -> dict:
         return v
     except Exception:
         return {"caught": False, "matched_item": None, "reason": "json error"}
+
+
+import asyncio  # noqa: E402  (kept with the async helpers)
+
+from claude_agent_sdk import (  # noqa: E402
+    query, ClaudeAgentOptions, AssistantMessage, ResultMessage, TextBlock,
+)
+from prompt import USER_PROMPT  # noqa: E402
+
+CWD = str(ROOT / "claude_code_cwd")
+
+
+async def run_query(prompt: str, model: str, max_turns: int = 5) -> str:
+    """Chat-only Claude Code call via local CLI creds (mirrors coverage_probe.py)."""
+    opts = ClaudeAgentOptions(
+        allowed_tools=[], model=model, max_turns=max_turns,
+        max_buffer_size=1024 * 1024, cwd=CWD, env={},
+    )
+    text, result = "", ""
+    async for message in query(prompt=prompt, options=opts):
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    text += block.text
+        elif isinstance(message, ResultMessage):
+            result = message.result or ""
+    return result if result.strip() else text
+
+
+def _gather_source(app_dir: Path, max_files: int = 12, max_bytes: int = 60_000) -> str:
+    """Concatenate the app's .tsx/.ts source (excluding node_modules) for the generator,
+    capped so the prompt stays bounded."""
+    parts, total = [], 0
+    files = sorted(
+        p for p in (app_dir / "src").rglob("*")
+        if p.suffix in (".tsx", ".ts", ".jsx", ".js") and "node_modules" not in p.parts
+    )
+    for p in files[:max_files]:
+        body = p.read_text(encoding="utf-8", errors="ignore")
+        if total + len(body) > max_bytes:
+            break
+        rel = p.relative_to(app_dir)
+        parts.append(f"// {rel}\n{body}")
+        total += len(body)
+    return "\n\n".join(parts)
+
+
+async def generate_mutant(app_dir: Path, instruction: str, fault_class: str, model: str) -> tuple[dict, str, str]:
+    """Ask the model to inject one bug. Returns (record, rel_path, new_content)."""
+    prompt = USER_PROMPT["mutation_gen"].substitute(
+        instruction=instruction, source=_gather_source(app_dir), fault_class=fault_class,
+    )
+    out = await run_query(prompt, model)
+    return parse_injection(out)
+
+
+async def judge_catch(injected: dict, result_md: str, model: str, votes: int = 3) -> dict:
+    """Run the catch-judge `votes` times and take the majority (D1). Returns
+    {caught, votes:[...]} with every vote's verdict for the audit trail."""
+    prompt = USER_PROMPT["mutation_catch"].substitute(
+        injected=json.dumps(injected, ensure_ascii=False), result=result_md,
+    )
+    ballots = await asyncio.gather(*(run_query(prompt, model) for _ in range(votes)))
+    parsed = [parse_catch(b) for b in ballots]
+    return {"caught": majority_caught([p["caught"] for p in parsed]), "votes": parsed}
