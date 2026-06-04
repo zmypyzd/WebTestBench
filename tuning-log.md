@@ -254,3 +254,56 @@ P1 在**覆盖维度成功**：CS/IX 这两个最差的类 bug 覆盖大幅抬�
 **浮现的新 route（更高杠杆）**：**根治 detection 输出格式方差**——让 detection 在所有记录上可靠输出 canonical checkbox（0006 类顽固标题/内联粗体会污染 scoring 与一切下游）。这比继续砸钱 reverify 更值得投。
 
 **reverify 复活的前提**（若日后要捡）：先修上游格式，再给 `parse_pass_items`+`reconcile` 加"先归一化为 canonical checkbox"前置步（用 scoring 的双格式解析器，但要先剔除 BUG-xx 幻影 id），才能在 0006 类记录上真跑。
+
+---
+
+## Step 1 — Output-format reliability (canonicalize) — SHIPPED & ABLATED (2026-06-04)
+
+Implements the format route flagged above. New `eval/canonicalize.py` (`normalize_to_canonical`, `count_phantom_ids`) wired into `scoring._parse_pred_items` behind `--canonicalize` (default off); the header fallback also drops phantom `BUG-\d+` ids unconditionally (belt-and-suspenders). Branch `feat/selfhunt-format-and-evidence`. Plan: `docs/superpowers/plans/2026-06-04-selfhunt-format-and-evidence.md`.
+
+**Gold-independent ablation** (baseline reverify-off detection artifacts copied into `_canon_off`/`_canon_on`, scored OFF vs ON; harness `scripts/ablate_canonicalize.py`):
+
+| record | phantom(raw) | empty_match OFF | empty_match ON | num_pred | coverage OFF→ON |
+|---|---|---|---|---|---|
+| 0001 | 0 | False | False | 25 | (canonical, unaffected) |
+| 0002 | 0 | False | False | 22 | idempotent, unaffected |
+| **0006** | **5** | **True** | **False** | 25 | **0.0 → 0.524** |
+
+**Verdict: KEEP.** Both gates pass: (1) phantom-id rate → 0 deterministically (0006: 5→0); (2) `empty_match` cleared on the heading-form record (0006 OFF empty_match=True/F1 0/cov 0 → ON scored, cov 0.524) — the matcher succeeds once it receives canonical, phantom-free, correctly-PASS/FAIL-labelled input. No regression on already-canonical records (0002 idempotent; 0001 unaffected). A real-data bug was caught during TDD: 0006 uses `**Result: PASS/FAIL**` status lines that the first `_DEDICATED_STATUS_RE` missed → all-pass; fixed and locked by a regression asserting 0006's 7 FAILs (FT-04/05/06, CS-02/03, IX-01, CT-02) survive normalization.
+
+**Scope note:** ON 0006 F1 is still 0 — format is necessary but not sufficient; the product's actual 0006 judgments are weak (self-hunt's canonical 0006 scored F1 0.25). Improving judgment is Step 2's job (evidence-forced). Step 1's win is that a format-crashed record is now *scored* instead of silently flagged `empty_match`.
+
+---
+
+## Step 2 — Evidence-forced judgment — CODE COMPLETE, ABLATION RUN PENDING (2026-06-04)
+
+New `eval/agent/evidence_lint.py` (`find_unsupported_pass`, flag-only) + `EVIDENCE_REQUIREMENT` block in `eval/prompt/defect_detection.py`, threaded behind `--require_evidence` (default off) through `run_agent.py` → `base_agent.py` → `claude_code.py` (mirrors `--reverify`). When on: appends the evidence requirement to the detection prompt and, after detection, emits an `__EVENT__ evidence_lint` listing PASS items with no `- Evidence:` line. Off = byte-equivalent no-op (verified). Unit tests: 8 evidence_lint + 13 canonicalize = 21 green; full suite 31 green. Harness: `scripts/ablate_evidence.py`.
+
+**Status: code shipped & unit-tested; empirical ablation NOT yet run.** The Step 2 ablation requires two full WebTester agent runs (baseline vs `--require_evidence`) with a FIXED checklist, which needs the **agent model's API config** (the `XXX` placeholders in `scripts/run_webtester_cc.sh` for `API_BASE_URL`/`API_KEY`/`MODEL`) — the MiniMax key wired earlier is only the scoring matcher, not the agent. That config was not available in this session, so the run is deferred. Hard checkpoint honored for Step 1 (passed its gold-independent gate); Step 2's judgment gate (item-level mis-PASS→FAIL flips on 0002-class records, no new FPs, drift-free-subset F1 non-regression, tool-call covariates) is to be evaluated once the agent runs are produced.
+
+**To run Step 2 ablation:** set the agent API in `scripts/run_webtester_cc.sh`; run the agent on the record set into `_evid_base` (no flag) and `_evid_on` (`--require_evidence`), copying the baseline `checklist.md` into the evidence run dirs before detection (confound control); score both; then `python scripts/ablate_evidence.py`.
+
+---
+
+## Step 2 — Evidence-forced judgment — ABLATED (2026-06-04): NO-OP (harmless, unproven)
+
+Ran the real ablation on record **0002** (the designated judgment-miss target). Agent = **sonnet** (CLI creds); scoring matcher = MiniMax-M3 with `--canonicalize`. Confound control: baseline run produced `checklist.md`; it was copied into the evidence run dir so `checklist_generation` SKIPPED (verified) and only `defect_detection` differed by `--require_evidence`.
+
+**Real-data format fix needed first:** the sonnet agent emitted `- [x] **FT-01** — desc` (bold id, em-dash, NO colon) — a dialect `normalize_to_canonical` didn't cover; scoring parsed 0 items. Extended canonicalize (`_CHECKBOX_LOOSE_RE`, commit bee5e71) → the 0002 baseline now parses to 24 items. (Another instance of real agent output exceeding the prompt's STRICT FORMAT.)
+
+**Evidence requirement was followed:** `__EVENT__ evidence_lint` = "0 PASS item(s) lack Evidence" (21 Evidence lines emitted).
+
+**Result (F1 re-scored 3× per arm to separate matcher variance from real effect; agent output is fixed, only the matcher is non-deterministic):**
+
+| arm | F1 (3 matcher draws) | item-level PASS→FAIL flips | tool-calls |
+|---|---|---|---|
+| baseline | 0.500, 0.286, 0.286 | — | 83 |
+| evidence | 0.286, 0.286, 0.286 | **0** (of 24 common items) | 73 |
+
+**Verdict: NO-OP.** The two arms are statistically the same (mode F1 0.286; baseline's 0.500 was a single lucky matcher draw, its repeats == evidence). The evidence requirement changed **zero** judgments. Root cause: **a sonnet agent does not commit the rubber-stamp-PASS-without-observing mistake that Step 2 targets** — on 0002 it worked around the time-drift by creating its own future-dated events to populate the grid, then tested, rather than leaving the grid empty and marking browse PASS (which is exactly what the weaker product baseline did). So the target failure mode does not reproduce with a capable agent, and the structural evidence nudge has nothing to correct. Consistent with the prior P2 finding ("the agent already does adversarial QA; judgment is the limit and prompt-tuning can't move it") — now extended: a structurally-enforced evidence field is also ~no-op for a capable agent.
+
+**Disposition: KEEP behind flag, default OFF; do NOT enable by default.** Harmless (lint clean, format fine, no budget blow-up, no FP introduced), but value unproven. To ever demonstrate value you'd need a record where a *capable* agent genuinely mis-judges a covered item — the time-drift records are not it (sonnet routes around them). n=1 (single record); broader runs are unlikely to overturn the structural conclusion and cost full agent campaigns. The reusable assets (evidence schema, `evidence_lint`, harness) remain for future weaker-agent or stricter-escalation (option b/c) experiments.
+
+**Net for the branch:** Step 1 (canonicalize) is a real KEEP win (unblocks scoring on format-crashed records). Step 2 (evidence) is harmless-but-no-op on a capable agent — ship the code behind its default-off flag, do not turn it on.
+
+**Default flipped (2026-06-04):** `canonicalize` is now **default-ON** in `scoring.py` (constructor default `True`, `parse_args` default `True`); added `--no-canonicalize` to disable for A/B repro. Rationale: once Step 1 passed its gate, leaving a proven-useful, harmless, idempotent normalization behind a default-off flag was inconsistent with how prior proven tuning shipped (P1/P2 keepers/parser fixes were all on-by-default; only the *unproven* P3 reverify stayed flagged-off). Caveat: re-scoring existing `outputs/` runs now normalizes by default, which rebases historical scores to the (more-correct) canonical parse — intended.

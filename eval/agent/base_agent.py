@@ -34,6 +34,7 @@ class BaseAgent:
         server_url: str,
         local_project_dir: str | Path,
         event_log_stream: Optional[Any] = None,
+        require_evidence: bool = False,
     ) -> None:
         self.instruction = instruction
         self.api_config = api_config
@@ -54,6 +55,7 @@ class BaseAgent:
         self.result_reverified_path = self.output_dir / "result_reverified.md"
         # Set True by subclasses when the --reverify gate is on; gates final_result_path.
         self.reverify_enabled: bool = False
+        self.require_evidence: bool = require_evidence
 
     @property
     def final_result_path(self) -> Path:

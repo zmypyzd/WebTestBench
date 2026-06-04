@@ -10,6 +10,7 @@ import requests
 from openpyxl import Workbook
 
 from agent.base_agent import APIConfig
+from canonicalize import normalize_to_canonical
 from prompt.match_item import PROMPT_MATCH_ITEM
 from utils import *
 
@@ -33,12 +34,14 @@ class ScoringPipeline:
         api_config: APIConfig,
         version: str,
         use_checklist_fallback: bool = False,
+        canonicalize: bool = True,
     ) -> None:
         self.dataset_path = dataset_path
         self.output_root = output_root
         self.version = version
         self.api_config = api_config
         self.use_checklist_fallback = use_checklist_fallback
+        self.canonicalize = canonicalize
         self.dataset = self._load_dataset()
 
         # Task IDs where result files are missing.
@@ -526,6 +529,8 @@ class ScoringPipeline:
         return self._parse_pred_items(text)
 
     def _parse_pred_items(self, text: str) -> Dict[str, dict]:
+        if getattr(self, "canonicalize", True):
+            text = normalize_to_canonical(text)
         lines = text.splitlines()
         pred_items: Dict[str, dict] = {}
 
@@ -543,7 +548,10 @@ class ScoringPipeline:
 
         # 2) Fallback: '### <ID> ...' header + nearest following PASS/FAIL marker.
         hdr = re.compile(r"^#{2,4}\s*(?:\*\*)?([A-Z]{2,3}-\d+)(?:\*\*)?\s*[:·–—\-]?\s*(.*)$")
-        status = re.compile(r"\b(PASS|FAIL)\b", re.IGNORECASE)
+        _dedicated_status = re.compile(
+            r"^\*{0,2}\s*(?:(?:status|result)\s*:\s*)?(pass|fail)\s*\*{0,2}$",
+            re.IGNORECASE,
+        )
         cur = None
         seen_status: Dict[str, bool] = {}
         for line in lines:
@@ -551,11 +559,18 @@ class ScoringPipeline:
             hm = hdr.match(s)
             if hm:
                 cur = hm.group(1)
+                if re.match(r"BUG-?\d+$", cur, re.IGNORECASE):
+                    cur = None
+                    continue
                 pred_items[cur] = {"content": hm.group(2).strip(), "pass": True}
                 seen_status[cur] = False
                 continue
             if cur and not seen_status.get(cur):
-                sm = status.search(s)
+                sm = re.fullmatch(
+                    r"\*{0,2}\s*(?:(?:status|result)\s*:\s*)?(pass|fail)\s*\*{0,2}",
+                    s,
+                    re.IGNORECASE,
+                )
                 if sm:
                     pred_items[cur]["pass"] = sm.group(1).upper() == "PASS"
                     seen_status[cur] = True
@@ -1129,6 +1144,12 @@ def parse_args():
         type=lambda v: str(v).lower() in ("1", "true", "yes", "y", "t"),
         help="Allow using checklist.md to match/compute coverage when result_extracted.md is missing. Can be used as a flag or with explicit True/False.",
     )
+    parser.add_argument(
+        "--no-canonicalize", action="store_false", dest="canonicalize", default=True,
+        help="Disable canonical-form normalization (strip phantom BUG-xx, "
+             "convert heading/inline) before matching. Normalization is ON by "
+             "default (ablation-proven KEEP); use this only for A/B repro.",
+    )
     return parser.parse_args()
 
 
@@ -1154,6 +1175,7 @@ def main():
         api_config=api_config,
         version=args.version,
         use_checklist_fallback=args.use_checklist_fallback,
+        canonicalize=args.canonicalize,
     )
     pipeline.run()
 

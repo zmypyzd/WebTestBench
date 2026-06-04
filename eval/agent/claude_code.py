@@ -41,6 +41,7 @@ class ClaudeCodeWebTester(BaseAgent):
             server_url=server_url,
             local_project_dir=local_project_dir,
             event_log_stream=event_log_stream,
+            require_evidence=bool(kwargs.get("require_evidence", False)),
         )
 
         self.checklist_path = self.output_dir / "checklist.md"
@@ -156,6 +157,9 @@ class ClaudeCodeWebTester(BaseAgent):
         prompt = USER_PROMPT["defect_detection"].substitute(
             instruction=self.instruction, server_url=self.server_url, checklist=checklist_md,
         )
+        if getattr(self, "require_evidence", False):
+            from prompt.defect_detection import EVIDENCE_REQUIREMENT
+            prompt = prompt + EVIDENCE_REQUIREMENT
         options = self._get_browser_agent_options(max_turns=self.max_turns)
 
         async for message in query(prompt=prompt, options=options):
@@ -178,6 +182,19 @@ class ClaudeCodeWebTester(BaseAgent):
 
         if self._verify_output_file(target_file):
             self._emit_file_event(stage, target_file)
+            if getattr(self, "require_evidence", False):
+                from agent.evidence_lint import find_unsupported_pass
+                try:
+                    result_text = self.result_path.read_text(encoding="utf-8")
+                except Exception:
+                    result_text = ""
+                offenders = find_unsupported_pass(result_text)
+                self._emit_event(
+                    type_name="evidence_lint",
+                    stage=stage,
+                    status=None,
+                    message=f"{len(offenders)} PASS item(s) lack Evidence: {offenders}",
+                )
             print_green("✅ Action Execution Completed.")
             return True
         else:
