@@ -58,6 +58,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require_evidence", action="store_true",
                         help="Require a per-item Evidence line in detection output "
                              "and run evidence_lint (flag-only). Default off.")
+    parser.add_argument("--hunt_rounds", type=int, default=3,
+                        help="Adversarial defect_hunt rounds producing BUGS.md "
+                             "(default 3; 0 disables the stage). Does not affect scoring.")
 
     return parser.parse_args()
 
@@ -103,6 +106,7 @@ async def _run_record(
             event_log_stream=None,
             reverify=args.reverify,
             require_evidence=args.require_evidence,
+            hunt_rounds=args.hunt_rounds,
         )
         if probe_agent.result_extracted_path.exists():
             return
@@ -134,6 +138,7 @@ async def _run_record(
             record=record,
             reverify=args.reverify,
             require_evidence=args.require_evidence,
+            hunt_rounds=args.hunt_rounds,
         )
         await agent.run()
 

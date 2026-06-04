@@ -58,6 +58,8 @@ class ClaudeCodeWebTester(BaseAgent):
         self.recent_assistant_text_blocks: Dict[str, List[str]] = {}
         # defect detection stage setting
         self.max_turns = 150
+        # defect_hunt stage: number of adversarial rounds (0 disables the stage).
+        self.hunt_rounds = int(kwargs.get("hunt_rounds", 3))
 
         self.cwd_dir = "./claude_code_cwd"
         os.makedirs(self.cwd_dir, exist_ok=True)
