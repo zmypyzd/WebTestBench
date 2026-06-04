@@ -12,8 +12,8 @@ RUN COMMANDS (executed by the operator, not this script):
     --output_root ./outputs --use_checklist_fallback True \
     --api_base_url https://api.minimaxi.com/v1/chat/completions \
     --api_key $MINIMAX_API_KEY --api_model MiniMax-M3"
-  python eval/scoring.py $COMMON --version _canon_off
-  python eval/scoring.py $COMMON --version _canon_on --canonicalize
+  python eval/scoring.py $COMMON --version _canon_off --no-canonicalize  # OFF arm (normalization is default-ON)
+  python eval/scoring.py $COMMON --version _canon_on                      # ON arm = default
 """
 import json
 import sys
