@@ -14,6 +14,52 @@ from typing import Any, Dict, Optional, Literal
 from utils import *
 
 
+# Report-header dialects a defect_hunt may emit. The English form is what the
+# prompt asks for; the Chinese form is the chaos-qa-hunter native template that
+# real models (esp. sonnet) fall back to. Accept both so the contract recognizes
+# genuine hunt output regardless of which header the model chose.
+_BUG_REPORT_HEADERS = ("Bug Report", "系统错误报告")
+
+
+def _is_bug_report_header(line: str) -> bool:
+    s = line.strip()
+    if not s.startswith("#"):
+        return False
+    title = s.lstrip("#").strip()
+    return any(title.startswith(h) for h in _BUG_REPORT_HEADERS)
+
+
+def _is_bug_block_heading(line: str) -> bool:
+    s = line.strip()
+    return s.startswith("#") and s.lstrip("#").strip().upper().startswith("BUG-")
+
+
+def _has_required_bugs(content: str | None) -> bool:
+    """Valid hunt output: a report heading (English or Chinese dialect) AND at
+    least one `## BUG-NNN` block."""
+    if not content:
+        return False
+    has_header = any(_is_bug_report_header(l) for l in content.splitlines())
+    has_bug = any(_is_bug_block_heading(l) for l in content.splitlines())
+    return has_header and has_bug
+
+
+def _slice_bug_report(content: str) -> str:
+    """Trim any conversational preamble a model emits before the report. Returns
+    the substring starting at the first report-header line (either dialect), or the
+    first `## BUG-` heading if no header line is present, else the original."""
+    if not content:
+        return content
+    lines = content.splitlines()
+    for i, line in enumerate(lines):
+        if _is_bug_report_header(line):
+            return "\n".join(lines[i:]).strip()
+    for i, line in enumerate(lines):
+        if _is_bug_block_heading(line):
+            return "\n".join(lines[i:]).strip()
+    return content
+
+
 @dataclass
 class APIConfig:
     base_url: str
@@ -53,6 +99,7 @@ class BaseAgent:
         self.result_extracted_path = self.output_dir / "result_extracted.md"
         self.session_meta_path = self.output_dir / "session_meta.json"
         self.result_reverified_path = self.output_dir / "result_reverified.md"
+        self.bugs_path = self.output_dir / "BUGS.md"
         # Set True by subclasses when the --reverify gate is on; gates final_result_path.
         self.reverify_enabled: bool = False
         self.require_evidence: bool = require_evidence
@@ -416,5 +463,16 @@ class BaseAgent:
                 if s.startswith("#") and s.lstrip("#").strip().startswith("Test Result"):
                     return True
         return False
-    
-    
+
+    def _has_required_bugs(self, content: str | None) -> bool:
+        """Valid hunt output: a report heading (English or Chinese dialect) AND at
+        least one `## BUG-NNN` block. Delegates to a module-level function so the
+        validator stays callable as an unbound method (`fn(None, text)`) in tests."""
+        return _has_required_bugs(content)
+
+    def _slice_bug_report(self, content: str) -> str:
+        """Trim any conversational preamble a model emits before the report.
+        Delegates to a module-level function (see `_slice_bug_report`)."""
+        return _slice_bug_report(content)
+
+
