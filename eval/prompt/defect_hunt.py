@@ -50,7 +50,7 @@ High/Critical bug, OR (b) you are near your turn budget. Round focus: R1 normal 
 + P0 boundaries; R2 state machine + missing values; R3 concurrency + error paths +
 project hygiene.
 
-# Output (your FINAL message — emitted ALL AT ONCE, not appended to any file)
+# Output Format (your FINAL message — emitted ALL AT ONCE, not appended to any file)
 Emit the COMPLETE report as your final message under a top-level `# Bug Report`
 header. The harness writes it to BUGS.md; you must NOT write files yourself.
 

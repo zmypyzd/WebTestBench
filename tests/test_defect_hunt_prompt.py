@@ -18,6 +18,7 @@ def test_substitutes_all_placeholders():
     assert "/abs/path/to/project" in out
     # no leftover unfilled placeholders
     assert "$" not in out
+    assert "3" in out  # hunt_rounds substituted
 
 
 def test_prompt_is_checklist_free_and_emits_bug_report():
@@ -25,5 +26,5 @@ def test_prompt_is_checklist_free_and_emits_bug_report():
     assert "$checklist" not in src          # hunt is checklist-free by design
     assert "# Bug Report" in src            # distinct header, not "# Test Result"
     assert "# Test Result" not in src
-    # iron law: never read gold/answer files
-    assert "gold" in src.lower()
+    # iron law: never read gold/answer files (check the actual prohibitive phrase)
+    assert '"gold"' in src and "NEVER read" in src
