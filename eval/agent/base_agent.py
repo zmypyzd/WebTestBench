@@ -474,6 +474,5 @@ class BaseAgent:
         """Trim any conversational preamble a model emits before the report.
         Delegates to a module-level function (see `_slice_bug_report`)."""
         return _slice_bug_report(content)
-        return content
 
 
