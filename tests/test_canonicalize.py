@@ -174,3 +174,23 @@ def test_real_evid_base_0002_parses_after_normalize():
     norm = normalize_to_canonical(p.read_text())
     ids = [m.group(2) for line in norm.splitlines() if (m := cb.match(line.strip()))]
     assert len([i for i in ids if i.startswith(("FT-","CS-","IX-","CT-"))]) >= 20, f"expected ~22 items, got {ids}"
+
+
+def _parse(argv):
+    import sys, scoring
+    old = sys.argv
+    sys.argv = ["scoring.py", "--dataset_path", "d", "--output_root", "o",
+                "--version", "v", "--api_base_url", "u", "--api_key", "k",
+                "--api_model", "m"] + argv
+    try:
+        return scoring.parse_args()
+    finally:
+        sys.argv = old
+
+
+def test_parse_args_canonicalize_default_is_on():
+    assert _parse([]).canonicalize is True
+
+
+def test_parse_args_no_canonicalize_disables():
+    assert _parse(["--no-canonicalize"]).canonicalize is False

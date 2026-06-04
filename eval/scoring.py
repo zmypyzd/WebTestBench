@@ -34,7 +34,7 @@ class ScoringPipeline:
         api_config: APIConfig,
         version: str,
         use_checklist_fallback: bool = False,
-        canonicalize: bool = False,
+        canonicalize: bool = True,
     ) -> None:
         self.dataset_path = dataset_path
         self.output_root = output_root
@@ -529,7 +529,7 @@ class ScoringPipeline:
         return self._parse_pred_items(text)
 
     def _parse_pred_items(self, text: str) -> Dict[str, dict]:
-        if getattr(self, "canonicalize", False):
+        if getattr(self, "canonicalize", True):
             text = normalize_to_canonical(text)
         lines = text.splitlines()
         pred_items: Dict[str, dict] = {}
@@ -1145,10 +1145,10 @@ def parse_args():
         help="Allow using checklist.md to match/compute coverage when result_extracted.md is missing. Can be used as a flag or with explicit True/False.",
     )
     parser.add_argument(
-        "--canonicalize", action="store_true",
-        help="Normalize detection output to canonical checkbox "
-             "form (strip phantom BUG-xx, convert heading/inline) "
-             "before matching. Default off for A/B ablation.",
+        "--no-canonicalize", action="store_false", dest="canonicalize", default=True,
+        help="Disable canonical-form normalization (strip phantom BUG-xx, "
+             "convert heading/inline) before matching. Normalization is ON by "
+             "default (ablation-proven KEEP); use this only for A/B repro.",
     )
     return parser.parse_args()
 
