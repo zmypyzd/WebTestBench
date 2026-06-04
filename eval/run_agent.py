@@ -108,7 +108,8 @@ async def _run_record(
             require_evidence=args.require_evidence,
             hunt_rounds=args.hunt_rounds,
         )
-        if probe_agent.result_extracted_path.exists():
+        hunt_pending = args.hunt_rounds > 0 and not probe_agent.bugs_path.exists()
+        if probe_agent.result_extracted_path.exists() and not hunt_pending:
             return
 
         log_dir.mkdir(parents=True, exist_ok=True)
