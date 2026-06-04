@@ -36,10 +36,13 @@ def classify_validity(deploy_ok: bool, reachable: bool) -> str:
 
 
 def should_regenerate(mutant_dir: Path, regen: bool) -> bool:
-    """Reuse a cached mutant unless forced. Cache key = injected.json exists (cache mechanism A)."""
+    """Reuse a cached mutant only if ALL of its files are present; otherwise
+    regenerate. A partial write (crash mid-generation) -> regenerate, not a
+    confusing reuse-then-FileNotFoundError (cache mechanism A)."""
     if regen:
         return True
-    return not (Path(mutant_dir) / "injected.json").exists()
+    d = Path(mutant_dir)
+    return not all((d / f).exists() for f in ("injected.json", "patch_meta.json", "new_file.txt"))
 
 
 def aggregate(records: list[dict]) -> dict:

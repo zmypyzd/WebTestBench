@@ -29,9 +29,12 @@ def test_classify_validity():
 def test_should_regenerate(tmp_path):
     mdir = tmp_path / "m0"
     mdir.mkdir()
-    assert ml.should_regenerate(mdir, regen=False) is True   # no injected.json yet
+    assert ml.should_regenerate(mdir, regen=False) is True   # nothing cached yet
     (mdir / "injected.json").write_text("{}")
-    assert ml.should_regenerate(mdir, regen=False) is False  # cached -> reuse
+    assert ml.should_regenerate(mdir, regen=False) is True   # partial cache -> regenerate
+    (mdir / "patch_meta.json").write_text("{}")
+    (mdir / "new_file.txt").write_text("x")
+    assert ml.should_regenerate(mdir, regen=False) is False  # full cache -> reuse
     assert ml.should_regenerate(mdir, regen=True) is True     # forced
 
 

@@ -75,16 +75,24 @@ async def run_one_mutant(app_id: str, k: int, record: dict, args, api_config: AP
 
         # 3) deploy + full detection (reuses ClaudeCodeWebTester as-is)
         server_url = f"http://localhost:{port}/"
-        agent = ClaudeCodeWebTester(
-            instruction=instruction, api_config=api_config,
-            server_url=server_url, local_project_dir=app_copy, output_dir=mdir / "run",
-        )
+        run_dir = mdir / "run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log_path = run_dir / "event.log"
         deploy_ok = True
+        log_f = open(log_path, "w", encoding="utf-8")
         try:
-            await agent.run()
-        except Exception as exc:
-            print(f"[{app_id} m{k}] detection/deploy error: {exc}")
-            deploy_ok = agent.result_extracted_path.exists()
+            agent = ClaudeCodeWebTester(
+                instruction=instruction, api_config=api_config,
+                server_url=server_url, local_project_dir=app_copy, output_dir=run_dir,
+                event_log_stream=log_f,
+            )
+            try:
+                await agent.run()
+            except Exception as exc:
+                print(f"[{app_id} m{k}] detection/deploy error: {exc}")
+                deploy_ok = agent.result_extracted_path.exists()
+        finally:
+            log_f.close()
 
         result_md = ""
         if agent.result_extracted_path.exists():
