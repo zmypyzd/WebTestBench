@@ -1,0 +1,108 @@
+from prompt import USER_PROMPT
+import mutation_lib as ml
+
+
+def test_mutation_prompts_registered_and_substitutable():
+    gen = USER_PROMPT["mutation_gen"].substitute(
+        instruction="x", source="y", fault_class="CS"
+    )
+    assert "fault class `CS`" in gen
+    catch = USER_PROMPT["mutation_catch"].substitute(injected="a", result="b")
+    assert "CAUGHT" in catch
+    assert "$" not in gen
+    assert "$" not in catch
+
+
+def test_majority_caught():
+    assert ml.majority_caught([True, True, False]) is True
+    assert ml.majority_caught([True, False, False]) is False
+    assert ml.majority_caught([True]) is True
+    assert ml.majority_caught([]) is False
+
+
+def test_classify_validity():
+    assert ml.classify_validity(deploy_ok=False, reachable=True) == "invalid"
+    assert ml.classify_validity(deploy_ok=True, reachable=False) == "suspect"
+    assert ml.classify_validity(deploy_ok=True, reachable=True) == "valid"
+
+
+def test_should_regenerate(tmp_path):
+    mdir = tmp_path / "m0"
+    mdir.mkdir()
+    assert ml.should_regenerate(mdir, regen=False) is True   # nothing cached yet
+    (mdir / "injected.json").write_text("{}")
+    assert ml.should_regenerate(mdir, regen=False) is True   # partial cache -> regenerate
+    (mdir / "patch_meta.json").write_text("{}")
+    (mdir / "new_file.txt").write_text("x")
+    assert ml.should_regenerate(mdir, regen=False) is False  # full cache -> reuse
+    assert ml.should_regenerate(mdir, regen=True) is True     # forced
+
+
+def test_aggregate_denominator_excludes_invalid_and_by_class():
+    records = [
+        {"fault_class": "CS", "validity": "valid",   "caught": True},
+        {"fault_class": "CS", "validity": "valid",   "caught": False},
+        {"fault_class": "IX", "validity": "valid",   "caught": True},
+        {"fault_class": "FT", "validity": "invalid", "caught": False},  # excluded
+        {"fault_class": "FT", "validity": "suspect", "caught": True},   # excluded
+    ]
+    agg = ml.aggregate(records)
+    assert agg["valid"] == 3 and agg["invalid"] == 1 and agg["suspect"] == 1
+    assert agg["catch_rate"] == round(2 / 3, 3)          # 2 caught of 3 valid
+    assert agg["by_class"]["CS"]["catch_rate"] == 0.5    # 1 of 2
+    assert agg["by_class"]["IX"]["catch_rate"] == 1.0    # 1 of 1
+    assert "FT" not in agg["by_class"]                   # no valid FT mutants
+
+
+def test_aggregate_all_invalid_returns_none_rate():
+    agg = ml.aggregate([{"fault_class": "CS", "validity": "invalid", "caught": False}])
+    assert agg["valid"] == 0 and agg["catch_rate"] is None and agg["by_class"] == {}
+
+
+def test_copy_app_sources_excludes_node_modules_and_symlinks(tmp_path):
+    src = tmp_path / "app"
+    (src / "src").mkdir(parents=True)
+    (src / "src" / "App.tsx").write_text("export default 1")
+    (src / "node_modules" / "dep").mkdir(parents=True)
+    (src / "node_modules" / "dep" / "index.js").write_text("// big dep")
+
+    dst = tmp_path / "copy"
+    ml.copy_app_sources(src, dst)
+
+    assert (dst / "src" / "App.tsx").read_text() == "export default 1"
+    nm = dst / "node_modules"
+    assert nm.is_symlink()                       # not a real copy
+    assert (nm / "dep" / "index.js").exists()     # resolves to the original
+
+
+def test_parse_injection_extracts_record_and_file():
+    md = '''Here you go:
+```json
+{"description": "total wrong", "file": "src/Cart.tsx", "fault_class": "CS", "repro_steps": "1. add item"}
+```
+```file:src/Cart.tsx
+export const x = 2
+```
+'''
+    rec, path, content = ml.parse_injection(md)
+    assert rec["fault_class"] == "CS"
+    assert rec["file"] == "src/Cart.tsx"
+    assert path == "src/Cart.tsx"
+    assert content.strip() == "export const x = 2"
+
+
+def test_parse_catch_reads_verdict():
+    md = 'verdict:\n```json\n{"caught": true, "matched_item": "EX-01", "reason": "same bug"}\n```'
+    v = ml.parse_catch(md)
+    assert v["caught"] is True
+    assert v["matched_item"] == "EX-01"
+
+
+def test_parse_catch_defaults_false_on_garbage():
+    assert ml.parse_catch("no json here").get("caught") is False
+
+
+def test_parse_catch_defaults_false_on_broken_json():
+    # a "{...}" containing "caught" is matched but is not valid JSON -> fail safe
+    v = ml.parse_catch('{"caught": true, "reason": broken}')
+    assert v["caught"] is False

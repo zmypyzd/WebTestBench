@@ -9,6 +9,8 @@ from .defect_detection_based_gold import PROMPT_DEFECT_DETECTION_BASED_GOLD
 from .defect_hunt import PROMPT_DEFECT_HUNT
 from .defect_reverify import PROMPT_DEFECT_REVERIFY
 from .match_item import PROMPT_MATCH_ITEM
+from .mutation_gen import PROMPT_MUTATION_GEN
+from .mutation_catch import PROMPT_MUTATION_CATCH
 
 USER_PROMPT = {
     "checklist_generation": PROMPT_CHECKLIST_GENERATION,
@@ -17,6 +19,8 @@ USER_PROMPT = {
     "defect_hunt": PROMPT_DEFECT_HUNT,
     "defect_reverify": PROMPT_DEFECT_REVERIFY,
     "match_item": PROMPT_MATCH_ITEM,
+    "mutation_gen": PROMPT_MUTATION_GEN,
+    "mutation_catch": PROMPT_MUTATION_CATCH,
 }
 
 __all__ = [
@@ -26,4 +30,6 @@ __all__ = [
     "PROMPT_DEFECT_HUNT",
     "PROMPT_DEFECT_REVERIFY",
     "PROMPT_MATCH_ITEM",
+    "PROMPT_MUTATION_GEN",
+    "PROMPT_MUTATION_CATCH",
 ]
