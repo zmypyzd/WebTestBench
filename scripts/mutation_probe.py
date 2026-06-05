@@ -85,6 +85,10 @@ async def run_one_mutant(app_id: str, k: int, record: dict, args, api_config: AP
                 instruction=instruction, api_config=api_config,
                 server_url=server_url, local_project_dir=app_copy, output_dir=run_dir,
                 event_log_stream=log_f,
+                # The catch-judge reads result_extracted.md (from defect_detection);
+                # the defect_hunt stage's BUGS.md is unused here, so skip it to save
+                # a meaningful chunk of per-mutant wall-clock (smoke: hunt ran for free).
+                hunt_rounds=0,
             )
             try:
                 await agent.run()
