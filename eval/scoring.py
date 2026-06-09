@@ -818,6 +818,24 @@ class ScoringPipeline:
                     "Cached matches is empty while pred_items is non-empty; rematching..."
                 )
 
+        # Empty predictions => there is nothing to match, so casting ballots is
+        # pure waste: each is a real (~60-80s MiniMax) matcher call that can only
+        # return []. The result-source empty-pred case is already short-circuited
+        # upstream in _process_record (_create_empty_match_bundle); this guards
+        # the surviving path — missing result + --use_checklist_fallback +
+        # checklist.md parsing to 0 items. Persist an empty, self-consistent
+        # artifact (so the empty-cache reuse path above hits next time) and return
+        # [] — downstream `if not match_ids` treats [] as empty_match either way.
+        if not pred_items:
+            self._write_json(match_result_file, {
+                "matches": [],
+                "detailed_matches": [],
+                "source": source,
+                "votes": votes,
+                "ballots": [],
+            })
+            return []
+
         # Build prompt once; reused across every ballot.
         prompt = PROMPT_MATCH_ITEM.substitute(
             instruction=instruction,

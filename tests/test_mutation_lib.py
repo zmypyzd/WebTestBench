@@ -315,3 +315,31 @@ def test_parse_catch_fenced_block_with_braces_in_reason():
     v = ml.parse_catch(md)
     assert v["caught"] is True
     assert v["matched_item"] == "EX-01"
+
+
+def test_parse_catch_unfenced_verdict_with_braces_in_reason():
+    # THE actual 0070-m1 failure: MiniMax-M3 with reasoning OFF emits a RAW JSON
+    # verdict with NO ```fence``` and braces in the reason prose. The bare-brace
+    # regex cannot span the inner braces, so a genuine catch was dropped as
+    # "unparseable verdict". A balanced-brace scan must recover it.
+    md = '{"caught": true, "matched_item": "CS-04", "reason": "fires when {votes} increments"}'
+    v = ml.parse_catch(md)
+    assert v["caught"] is True
+    assert v["matched_item"] == "CS-04"
+
+
+def test_parse_catch_unfenced_verdict_with_unbalanced_brace_in_string():
+    # A naive brace-depth counter breaks if a string literal holds a lone brace.
+    # The scanner must ignore braces INSIDE JSON string values.
+    md = '{"caught": true, "matched_item": "IX-02", "reason": "use a } to close it"}'
+    v = ml.parse_catch(md)
+    assert v["caught"] is True
+    assert v["matched_item"] == "IX-02"
+
+
+def test_parse_catch_unfenced_verdict_with_leading_prose():
+    # Leading prose before a raw (unfenced) JSON verdict must still parse.
+    md = 'My verdict:\n{"caught": true, "matched_item": "FT-01", "reason": "matches {x}"}'
+    v = ml.parse_catch(md)
+    assert v["caught"] is True
+    assert v["matched_item"] == "FT-01"
