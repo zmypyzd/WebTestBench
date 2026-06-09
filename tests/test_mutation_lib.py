@@ -1,3 +1,7 @@
+import asyncio
+import json
+import types
+
 from prompt import USER_PROMPT
 import mutation_lib as ml
 
@@ -59,7 +63,11 @@ def test_aggregate_all_invalid_returns_none_rate():
     assert agg["valid"] == 0 and agg["catch_rate"] is None and agg["by_class"] == {}
 
 
-def test_copy_app_sources_excludes_node_modules_and_symlinks(tmp_path):
+def test_copy_app_sources_clones_node_modules_write_isolated(tmp_path):
+    # D2: node_modules must be a REAL (cloned/copied) dir, NOT a symlink, so the
+    # mutant copy's `npm install` writes copy-on-write/isolated pages that never
+    # mutate the shared source tree. On a non-APFS box the real-copy fallback
+    # satisfies the identical postconditions.
     src = tmp_path / "app"
     (src / "src").mkdir(parents=True)
     (src / "src" / "App.tsx").write_text("export default 1")
@@ -71,8 +79,189 @@ def test_copy_app_sources_excludes_node_modules_and_symlinks(tmp_path):
 
     assert (dst / "src" / "App.tsx").read_text() == "export default 1"
     nm = dst / "node_modules"
-    assert nm.is_symlink()                       # not a real copy
-    assert (nm / "dep" / "index.js").exists()     # resolves to the original
+    assert nm.is_dir() and not nm.is_symlink()                 # real copy, not symlink
+    assert (nm / "dep" / "index.js").read_text() == "// big dep"  # same content resolves
+
+    # write-isolation: mutating the dst clone must NOT touch the source tree
+    (nm / "dep" / "index.js").write_text("// MUTATED in copy")
+    (nm / "newly_installed.js").write_text("// added by npm install")
+    assert (src / "node_modules" / "dep" / "index.js").read_text() == "// big dep"
+    assert not (src / "node_modules" / "newly_installed.js").exists()
+
+
+def test_copy_app_sources_falls_back_to_real_copy_on_clonefile_unsupported(tmp_path, monkeypatch):
+    # D2 item 9/10: simulate a non-APFS target where `cp -c` returns NON-ZERO (not
+    # an exception). The fallback must be a REAL recursive copy (never a symlink),
+    # still write-isolated. On an APFS box this branch is otherwise never hit.
+    src = tmp_path / "app"
+    (src / "src").mkdir(parents=True)
+    (src / "src" / "App.tsx").write_text("export default 1")
+    (src / "node_modules" / "dep").mkdir(parents=True)
+    (src / "node_modules" / "dep" / "index.js").write_text("// big dep")
+    # a relative self-contained symlink inside node_modules must be preserved
+    (src / "node_modules" / ".bin").mkdir()
+    try:
+        (src / "node_modules" / ".bin" / "tool").symlink_to("../dep/index.js")
+    except OSError:
+        pass  # platforms without symlink perms: still validate the rest
+
+    real_run = ml.subprocess.run
+
+    def fake_run(cmd, *a, **kw):
+        # Only force the clonefile `cp -c -R ...` to "fail"; pass through any others.
+        if isinstance(cmd, list) and cmd[:3] == ["cp", "-c", "-R"]:
+            return types.SimpleNamespace(returncode=1, stderr="clonefile not supported", stdout="")
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(ml.subprocess, "run", fake_run)
+
+    dst = tmp_path / "copy"
+    ml.copy_app_sources(src, dst)
+
+    nm = dst / "node_modules"
+    assert nm.is_dir() and not nm.is_symlink()                  # real copy, not a symlink
+    assert (nm / "dep" / "index.js").read_text() == "// big dep"
+    # write-isolation still holds via the real-copy fallback
+    (nm / "dep" / "index.js").write_text("// MUTATED")
+    assert (src / "node_modules" / "dep" / "index.js").read_text() == "// big dep"
+
+
+def test_copy_app_sources_no_node_modules_skips(tmp_path):
+    # apps without node_modules: copy succeeds, dst simply has no node_modules
+    # (base_agent's unconditional `npm install` creates it). `cp` of a missing
+    # source returns exit 1 which must NOT be misread as clonefile-unsupported.
+    src = tmp_path / "app"
+    (src / "src").mkdir(parents=True)
+    (src / "src" / "App.tsx").write_text("export default 1")
+
+    dst = tmp_path / "copy"
+    ml.copy_app_sources(src, dst)
+    assert (dst / "src" / "App.tsx").read_text() == "export default 1"
+    assert not (dst / "node_modules").exists()
+
+
+# ---------------------------------------------------------------------------
+# D1: independent HTTP judge (MiniMax-M3) — routing + aggregation, fully mocked
+# ---------------------------------------------------------------------------
+
+class _Cfg:
+    """APIConfig-shaped stand-in (.base_url / .api_key / .model)."""
+    def __init__(self, base_url=None, api_key=None, model="MiniMax-M3"):
+        self.base_url = base_url
+        self.api_key = api_key
+        self.model = model
+
+
+def test_use_http_judge_truth_table():
+    # None cfg -> False (no AttributeError)
+    assert ml.use_http_judge(None) is False
+    # cfg with empty/None base_url -> False (key off base_url ONLY)
+    assert ml.use_http_judge(_Cfg(base_url=None)) is False
+    assert ml.use_http_judge(_Cfg(base_url="")) is False
+    # only --judge_model set (default non-None) -> still False
+    assert ml.use_http_judge(_Cfg(base_url=None, model="MiniMax-M3")) is False
+    # base_url set -> True
+    assert ml.use_http_judge(_Cfg(base_url="https://api.example/v1/chat")) is True
+    # dict-shaped cfg also supported (defensive)
+    assert ml.use_http_judge({"base_url": "https://x"}) is True
+    assert ml.use_http_judge({"base_url": None}) is False
+
+
+def _fake_resp(content_str, status=200):
+    class R:
+        status_code = status
+        def json(self):
+            return {"choices": [{"message": {"content": content_str}}]}
+    return R()
+
+
+def test_judge_catch_http_aggregates_majority(monkeypatch):
+    # 2 caught=true ballots, 1 caught=false -> majority True
+    contents = [
+        '```json\n{"caught": true, "matched_item": "EX-01", "reason": "same bug"}\n```',
+        '```json\n{"caught": true, "matched_item": "EX-02", "reason": "same bug"}\n```',
+        '```json\n{"caught": false, "matched_item": null, "reason": "different"}\n```',
+    ]
+    seq = iter(contents)
+
+    def fake_post(*a, **kw):
+        return _fake_resp(next(seq))
+
+    monkeypatch.setattr(ml.requests, "post", fake_post)
+    cfg = _Cfg(base_url="https://api.example/v1/chat", api_key="k", model="MiniMax-M3")
+    verdict = asyncio.run(ml.judge_catch_http({"file": "src/x.tsx"}, "# Test Result\nFAIL", cfg))
+
+    assert set(verdict.keys()) == {"caught", "votes"}
+    assert verdict["caught"] is True
+    assert isinstance(verdict["caught"], bool)
+    assert len(verdict["votes"]) == 3
+    for v in verdict["votes"]:
+        assert isinstance(v, dict) and "caught" in v   # parse_catch dicts, never raw strings
+    assert sum(1 for v in verdict["votes"] if v["caught"]) == 2
+
+
+def test_judge_catch_http_minority_not_caught(monkeypatch):
+    contents = [
+        '{"caught": true, "reason": "x"}',
+        '{"caught": false, "reason": "y"}',
+        '{"caught": false, "reason": "z"}',
+    ]
+    seq = iter(contents)
+    monkeypatch.setattr(ml.requests, "post", lambda *a, **kw: _fake_resp(next(seq)))
+    cfg = _Cfg(base_url="https://api.example/v1/chat", api_key="k")
+    verdict = asyncio.run(ml.judge_catch_http({"file": "f"}, "result", cfg))
+    assert verdict["caught"] is False
+    assert len(verdict["votes"]) == 3
+
+
+def test_judge_catch_http_malformed_ballot_is_conservative(monkeypatch):
+    # malformed/non-JSON content -> that ballot parses to caught=False (conservative)
+    contents = [
+        '{"caught": true, "reason": "x"}',
+        'totally not json',
+        '{"caught": true, "reason": "z"}',
+    ]
+    seq = iter(contents)
+    monkeypatch.setattr(ml.requests, "post", lambda *a, **kw: _fake_resp(next(seq)))
+    cfg = _Cfg(base_url="https://api.example/v1/chat", api_key="k")
+    verdict = asyncio.run(ml.judge_catch_http({"file": "f"}, "result", cfg))
+    # 2 true, 1 unparseable(false) -> majority True
+    assert verdict["caught"] is True
+    assert verdict["votes"][1]["caught"] is False
+    assert len(verdict["votes"]) == 3
+
+
+def test_judge_catch_http_total_failure_counts_as_no_catch(monkeypatch):
+    # every vote's HTTP fully fails (post raises) -> after retries each ballot is a
+    # conservative caught=False; len(votes) MUST still equal vote count (no phantom).
+    def boom(*a, **kw):
+        raise ConnectionError("network down")
+
+    monkeypatch.setattr(ml.requests, "post", boom)
+    # keep retries fast: patch time.sleep used inside judge_catch_http
+    monkeypatch.setattr(ml.time, "sleep", lambda *a, **kw: None)
+    cfg = _Cfg(base_url="https://api.example/v1/chat", api_key="k")
+    verdict = asyncio.run(ml.judge_catch_http({"file": "f"}, "result", cfg))
+    assert verdict["caught"] is False
+    assert len(verdict["votes"]) == 3
+    assert all(v["caught"] is False for v in verdict["votes"])
+
+
+def test_judge_catch_http_non200_counts_as_no_catch(monkeypatch):
+    # HTTP 500 / missing choices -> retries exhausted -> conservative no-catch ballot
+    def http_500(*a, **kw):
+        class R:
+            status_code = 500
+            def json(self):
+                return {"error": "server"}
+        return R()
+
+    monkeypatch.setattr(ml.requests, "post", http_500)
+    monkeypatch.setattr(ml.time, "sleep", lambda *a, **kw: None)
+    cfg = _Cfg(base_url="https://api.example/v1/chat", api_key="k")
+    verdict = asyncio.run(ml.judge_catch_http({"file": "f"}, "result", cfg))
+    assert verdict["caught"] is False
+    assert len(verdict["votes"]) == 3
 
 
 def test_parse_injection_extracts_record_and_file():
@@ -106,3 +295,23 @@ def test_parse_catch_defaults_false_on_broken_json():
     # a "{...}" containing "caught" is matched but is not valid JSON -> fail safe
     v = ml.parse_catch('{"caught": true, "reason": broken}')
     assert v["caught"] is False
+
+
+def test_parse_catch_handles_none_and_empty():
+    # judge_catch_http feeds '' (or None) on total HTTP failure -> must not raise
+    assert ml.parse_catch("").get("caught") is False
+    assert ml.parse_catch(None).get("caught") is False
+
+
+def test_parse_catch_fenced_block_with_braces_in_reason():
+    # MiniMax-M3 reasoning verdicts may put braces in the reason prose. The bare
+    # brace regex `{[^{}]*"caught"[^{}]*}` would fail on the inner braces; a fenced
+    # ```json block must be tried first so a genuine catch is not dropped.
+    md = (
+        'verdict:\n```json\n'
+        '{"caught": true, "matched_item": "EX-01", "reason": "fails when {count} shown"}\n'
+        '```'
+    )
+    v = ml.parse_catch(md)
+    assert v["caught"] is True
+    assert v["matched_item"] == "EX-01"
