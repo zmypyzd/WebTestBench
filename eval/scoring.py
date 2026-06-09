@@ -2,7 +2,7 @@ import argparse
 import ast
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import time
@@ -13,6 +13,109 @@ from agent.base_agent import APIConfig
 from canonicalize import normalize_to_canonical
 from prompt.match_item import PROMPT_MATCH_ITEM
 from utils import *
+
+
+def _gold_sort_key(gold_id: str):
+    """Numeric-aware, deterministic ordering key for gold ids.
+
+    Numeric ids sort before string ids and by integer value (so '2' < '10',
+    NOT lexical '10' < '2' which is wrong for ids reaching 18). Non-numeric ids
+    (e.g. 'EX-NN', 'FT-NN') sort after numerics, lexically among themselves.
+    """
+    s = str(gold_id)
+    if s.isdigit():
+        return (0, int(s), "")
+    return (1, 0, s)
+
+
+def aggregate_ballots(
+    ballots: List[List[Tuple[str, Optional[str]]]],
+    pred_order: Optional[List[str]] = None,
+) -> List[Tuple[str, Optional[str]]]:
+    """Aggregate K matcher ballots into one (pred_id, gold_id|None) per pred.
+
+    PURE / network-free / total over its inputs. Union semantics (tau=1):
+
+    - Each ballot is a list of (pred_id, gold_id|None) pairs. ``None`` is the
+      ABSENCE of a vote, not a competing vote.
+    - For each predicted id we collect only the non-None gold votes across all
+      ballots (str-coerced; int 3 and str '3' collapse to one '3'). If any
+      non-None gold vote exists, the result is the MODE; ties broken by the
+      SMALLEST gold id via :func:`_gold_sort_key` (numeric-aware, deterministic
+      and ballot-order-independent). A pred with ZERO non-None votes emits
+      ``(pred, None)``.
+    - Within a single ballot a pred is deduped (counts once per gold) so one
+      flaky ballot repeating a pred cannot outvote other ballots.
+    - Malformed rows (not exactly 2 elements, or a falsy/None pred_id) are
+      skipped defensively so a stray row cannot crash the record.
+    - Output: exactly ONE row per distinct pred_id. Order follows ``pred_order``
+      when supplied (each listed pred appears once; omitted-by-all -> None);
+      otherwise first-appearance across the concatenated ballots.
+
+    Args:
+        ballots: surviving (non-None) per-run ballots. May include valid-empty
+            ``[]`` ballots (they contribute nothing but do not veto).
+        pred_order: canonical predicted-id order (e.g. ``list(pred_items)``).
+
+    Returns:
+        ``[(pred_id, gold_id|None), ...]`` — empty list for empty/no-vote input.
+    """
+    # Per pred: set of (gold) seen within the CURRENT ballot (for intra-ballot
+    # dedupe) is tracked per ballot; cross-ballot we accumulate a Counter.
+    vote_counts: Dict[str, "Counter"] = defaultdict(Counter)
+    # Track first-appearance order of pred ids across concatenated ballots.
+    appearance_order: List[str] = []
+    seen_preds = set()
+
+    def _note_pred(pred_id: str) -> None:
+        if pred_id not in seen_preds:
+            seen_preds.add(pred_id)
+            appearance_order.append(pred_id)
+
+    for ballot in ballots or []:
+        if not ballot:
+            continue
+        intra_seen: Dict[str, set] = defaultdict(set)
+        for row in ballot:
+            # Defend against malformed rows (1-/3-tuples, None pred).
+            try:
+                if len(row) != 2:
+                    continue
+            except TypeError:
+                continue
+            pred_id, gold_id = row[0], row[1]
+            if pred_id is None:
+                continue
+            _note_pred(pred_id)
+            if gold_id is None:
+                # None is absence of a vote; record the pred but cast no gold vote.
+                continue
+            gold_key = str(gold_id)
+            # Intra-ballot dedupe: a (pred, gold) pair counts once per ballot.
+            if gold_key in intra_seen[pred_id]:
+                continue
+            intra_seen[pred_id].add(gold_key)
+            vote_counts[pred_id][gold_key] += 1
+
+    order = pred_order if pred_order is not None else appearance_order
+
+    result: List[Tuple[str, Optional[str]]] = []
+    emitted = set()
+    for pred_id in order:
+        if pred_id in emitted:
+            continue
+        emitted.add(pred_id)
+        counts = vote_counts.get(pred_id)
+        if not counts:
+            # Zero non-None gold votes (or pred omitted by all ballots) -> None.
+            result.append((pred_id, None))
+            continue
+        max_count = max(counts.values())
+        winners = [g for g, c in counts.items() if c == max_count]
+        gold = min(winners, key=_gold_sort_key)
+        result.append((pred_id, gold))
+
+    return result
 
 
 class ScoringPipeline:
@@ -35,6 +138,7 @@ class ScoringPipeline:
         version: str,
         use_checklist_fallback: bool = False,
         canonicalize: bool = True,
+        match_votes: int = 1,
     ) -> None:
         self.dataset_path = dataset_path
         self.output_root = output_root
@@ -42,6 +146,10 @@ class ScoringPipeline:
         self.api_config = api_config
         self.use_checklist_fallback = use_checklist_fallback
         self.canonicalize = canonicalize
+        # Number of matcher ballots to union (D2). Coerce defensively to int >= 1:
+        # 0/negative would make range(K) empty -> zero ballots -> every record
+        # falsely becomes empty_match. K=1 == exact single-call behavior.
+        self.match_votes = max(1, int(match_votes))
         self.dataset = self._load_dataset()
 
         # Task IDs where result files are missing.
@@ -686,13 +794,21 @@ class ScoringPipeline:
         """
         match_result_file = output_dir / "score_match_ids.json"
 
-        # Reuse cached matches only when they come from the same source.
+        # Number of independent matcher ballots to union (D2). Read via getattr so
+        # a dropped/forgotten __init__ assignment degrades to single-ballot
+        # behavior instead of raising AttributeError (mirrors the canonicalize scar).
+        votes = max(1, int(getattr(self, "match_votes", 1)))
+
+        # Reuse cached matches only when stored source AND stored votes match (D4).
+        # Legacy caches lacking 'votes' default to 1, so under K=1 they are reused
+        # with zero recompute; any K>1 correctly invalidates them (one-time rematch).
         # If the cache is empty but current predictions are non-empty, force rematch
         # so stale empty outputs do not permanently mask valid data.
         if match_result_file.exists():
             match_result = json.loads(match_result_file.read_text(encoding="utf-8"))
             stored_source = match_result.get("source", "result")
-            if stored_source == source:
+            stored_votes = match_result.get("votes", 1)
+            if stored_source == source and stored_votes == votes:
                 cached_matches = match_result.get("matches")
                 if cached_matches:
                     return cached_matches
@@ -701,44 +817,86 @@ class ScoringPipeline:
                 print_red(
                     "Cached matches is empty while pred_items is non-empty; rematching..."
                 )
-        
-        # Build prompt and call the matcher model.
+
+        # Build prompt once; reused across every ballot.
         prompt = PROMPT_MATCH_ITEM.substitute(
             instruction=instruction,
             gold_items=self._format_items_for_prompt(gold_items),
             pred_items=self._format_items_for_prompt(pred_items),
         )
-        
-        match_ids = None
-        for attempt in range(1, retry + 1):
-            success, answer, _ = self._call_api(prompt)
-            print(f"answer: {answer}")
-            
-            if not success:
-                continue
-            
-            try:
-                # Parse LLM output as a Python literal list of pairs.
-                match_ids = ast.literal_eval(self._clean_match_answer(answer))
-                break
-            except Exception as e:
-                print_red(f"[Attempt {attempt}/{retry}] Invalid match format: {e}")
-                match_ids = None
-        
-        if match_ids is None:
+
+        # Cast K ballots. _match_once carries the per-ballot parse-retry budget
+        # internally; a None ballot is a failure and is DROPPED (no veto). Only if
+        # ALL K ballots fail do we return None (same empty_match path as before).
+        ballots: List[List[Tuple[str, Optional[str]]]] = []
+        for _ in range(votes):
+            ballot = self._match_once(prompt, retry=retry)
+            if ballot is not None:
+                ballots.append(ballot)
+
+        if not ballots:
             return None
-        
-        # Build detailed text-level mapping for artifact inspection.
+
+        # Aggregate survivors via the pure union function, preserving predicted
+        # order so every predicted id appears exactly once even if some ballots
+        # omitted it.
+        match_ids = aggregate_ballots(ballots, pred_order=list(pred_items.keys()))
+
+        # Build detailed text-level mapping from the AGGREGATED match_ids (NOT a
+        # single ballot) so the artifact stays self-consistent with scoring.
         detailed_matches = self._build_detailed_matches(match_ids, gold_items, pred_items)
-        
-        # Persist match artifacts for reproducibility.
+
+        # Persist match artifacts for reproducibility. Top-level 'matches' remains
+        # the FINAL aggregated list (external readers depend on it); 'ballots' is
+        # audit-only.
         self._write_json(match_result_file, {
             "matches": match_ids,
             "detailed_matches": detailed_matches,
             "source": source,
+            "votes": votes,
+            "ballots": ballots,
         })
 
         return match_ids
+
+    def _match_once(
+        self,
+        prompt: str,
+        retry: int = 3,
+    ) -> Optional[List[Tuple[str, Optional[str]]]]:
+        """Cast ONE matcher ballot: up to `retry` _call_api + parse attempts.
+
+        Returns the parsed list of ``(pred_id, gold_id|None)`` pairs on the first
+        attempt that yields a valid Python list literal, else ``None`` (a failed
+        ballot, which the caller DROPS without vetoing other ballots).
+
+        Two retry layers stay strictly separate: _call_api's internal HTTP/transport
+        retry lives inside _call_api; THIS loop is the parse-retry layer. This
+        method never writes the cache.
+        """
+        for attempt in range(1, retry + 1):
+            success, answer, _ = self._call_api(prompt)
+            print(f"answer: {answer}")
+
+            if not success:
+                continue
+
+            try:
+                # Parse LLM output as a Python literal list of pairs.
+                parsed = ast.literal_eval(self._clean_match_answer(answer))
+            except Exception as e:
+                print_red(f"[Attempt {attempt}/{retry}] Invalid match format: {e}")
+                continue
+
+            # Reject a non-list reply as a parse failure (retry within budget).
+            if not isinstance(parsed, list):
+                print_red(
+                    f"[Attempt {attempt}/{retry}] Match answer is not a list: {type(parsed)}"
+                )
+                continue
+            return parsed
+
+        return None
 
     def _build_detailed_matches(
         self,
@@ -1150,6 +1308,13 @@ def parse_args():
              "convert heading/inline) before matching. Normalization is ON by "
              "default (ablation-proven KEEP); use this only for A/B repro.",
     )
+    parser.add_argument(
+        "--match_votes", type=int, default=1,
+        help="Number of independent matcher ballots to union (tau=1). K=1 "
+             "(default) is exact current single-call behavior with zero extra "
+             "cost; K>1 unions matches appearing in >=1 ballot to recover "
+             "false-negative matches. Coerced to an int >= 1.",
+    )
     return parser.parse_args()
 
 
@@ -1176,6 +1341,7 @@ def main():
         version=args.version,
         use_checklist_fallback=args.use_checklist_fallback,
         canonicalize=args.canonicalize,
+        match_votes=args.match_votes,
     )
     pipeline.run()
 
