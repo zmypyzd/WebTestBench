@@ -307,3 +307,42 @@ Ran the real ablation on record **0002** (the designated judgment-miss target). 
 **Net for the branch:** Step 1 (canonicalize) is a real KEEP win (unblocks scoring on format-crashed records). Step 2 (evidence) is harmless-but-no-op on a capable agent — ship the code behind its default-off flag, do not turn it on.
 
 **Default flipped (2026-06-04):** `canonicalize` is now **default-ON** in `scoring.py` (constructor default `True`, `parse_args` default `True`); added `--no-canonicalize` to disable for A/B repro. Rationale: once Step 1 passed its gate, leaving a proven-useful, harmless, idempotent normalization behind a default-off flag was inconsistent with how prior proven tuning shipped (P1/P2 keepers/parser fixes were all on-by-default; only the *unproven* P3 reverify stayed flagged-off). Caveat: re-scoring existing `outputs/` runs now normalizes by default, which rebases historical scores to the (more-correct) canonical parse — intended.
+
+---
+
+## 方向 B 全链：发现 → 验证 → 回写 gold → matcher 投票 (2026-06-09)
+
+**先补 lineage（本日志在 06-04 后漏记的已合并改动；git/docs/specs 有据）**：
+- **PR#4** `defect_hunt` 阶段（chaos-qa 白盒，读全源码+8 向量攻击，写 `BUGS.md`，best-effort、默认 `hunt_rounds=3`、不进打分）。
+- **PR#5** **P1-A** 检测离清单对抗探索（`defect_detection.py §3`：判完 checklist 后用剩余预算找清单外 bug，输出 `EX-NN` Additional Findings，默认开）。
+- **PR#6** **变异 catch-rate 尺**（`scripts/mutation_probe.py`：注入已知 bug → 真检测 → 3 票判定是否抓到；gold 独立、对 gold 不完整/漂移免疫；~45min/run）。
+
+**本轮动机**：P1-A 在 mini 集挖出的 `EX-NN` 都匹配 0 gold——是真 bug 但 gold 看不见（gold 不完整封顶可测 recall）。走**方向 B：真去找更多 gold bug，限 7-app mini 集**，全程不读 gold、不靠变异尺。
+
+**① 发现**：P1-A 在 5 个 app 各出 1 个 EX-01 离清单候选——0009 订房日期 UTC 偏移差一天 / 0035 消息内存存储刷新即丢的假成功 / 0037 年龄筛选桶错 / 0080 fuzzy 过宽返回全部 / 0089 空字段漏裸 Markdown。
+
+**② 验证（gold-blind，ultracode 工作流）**：每候选 3 视角（机制确认 / 对抗反驳 / 用户可观察性）直接读真实源码、**禁读 gold**，拿 app 自带依赖（date-fns v3、micromark 4.0.2）/ 种子数据（errors.ts、pets.ts）**实跑复现**。**结论 4 铁案 + 1 大概率，0 反驳、0 存疑**：
+- 0009/0037/0080/0089 **确认真**；0035 facts 三方无争议（messageStore 无持久化、`getMessagesForBooth` 死代码、800ms 假延迟 + "Message sent!" toast、无后端），但"算不算 bug"取决**产品意图**，记**大概率真**。
+- 两处机制比 EX 更准：**0037** 根因是 `PetsPage.tsx:50` 按手写 `ageGroup` 字符串过滤（非边界数学）、种子标签自相矛盾（Luna 3→adult、Duke 7→senior）；**0080** 是 `useFuzzySearch.ts` 子序列匹配 + **无最低分阈值**。
+
+**③ 回写 gold**：5 条验证 bug 结构化追加进各 app 的 `checklist`（gold schema `{id,content,class,pass:false,bug}`，新 id 0009→18 / 0035→16 / 0037→17 / 0080→19 / 0089→27）。⚠️ **数据集 gitignored，改动只在本地**，备份 `data/WebTestBench/WebTestBench.jsonl.pre-goldwriteback.bak`（其余 95 条原样未动）。
+
+**④ 度量揭示新瓶颈 = matcher 噪声**：同一批 p1exp 检测输出，对旧/新 gold 对照重打分（必须清 `score_match_ids.json` 缓存，否则 `scoring.py:692-698` 无脑复用）。回写只在 LLM matcher 把检测的 `EX-01` 连到新 gold 项时才抬 recall。3 次单跑（K=1）落地集 {2,4,5}/5，**并集 5/5（全部可匹配、gold 文案没问题）**，但单跑随机欠数，把均值 recall 从 ~0.365 压到 0.273。**瓶颈已从检测/gold 完整性转移到保守随机的单次 LLM matcher（MiniMax-M3）。**
+
+**⑤ matcher 投票（PR#7，已并入 main `1ae9d13`）**：`eval/scoring.py` 加 `--match_votes K`（默认 1 = 现状、非破坏）。纯函数 `aggregate_ballots` **union τ=1**：每 pred 取 K 票里非 None gold 的**众数**，平票取**最小 gold id**（数值感知 `'2'<'10'`），gold id **str 归一**（顺带修了潜在 int/str key 不匹配 bug，故 K=1 只升不降）。`_get_matches` 重构为 `_match_once ×K`、丢失败票（不否决）、全败→None、**votes-aware 缓存**。34 新测试，全套 **103 绿**。spec `docs/superpowers/specs/2026-06-09-matcher-voting-design.md`。经 brainstorm→spec→ultracode 工作流（对抗设计评审→TDD→对抗验证）。
+
+**实证（5-app 新 gold，K=1 vs K=3）**：
+
+| 配置 | 落地 | 均值 recall |
+|---|---|---|
+| 旧 gold 基线 | — | 0.261 |
+| K=1（单次，噪声） | 2~5/5 | 0.273–0.365 |
+| **K=3（投票）** | **5/5（一趟）** | **0.365（+0.104，相对 +40%）** |
+
+**成本/坑（重要）**：MiniMax-M3 推理模型 **~60–80s/call** → K=3×5 records ≈ 20 分钟。`_call_api` 有 `timeout=120` 但 `retry=5`，API 抽风时整批可拖数小时（本轮踩过一次"看似挂 3 小时"，实为**慢 + API 抽风、非死锁**）。**大规模跑必须 shell `timeout` 兜底 + 控并发。**
+
+**已知 low-sev（PR#7 未修）**：首跑"缺结果 + 空预测 + 无缓存"的罕见记录会白烧 K 次调用（结果对 `[]`、仅浪费）。
+
+**caveat**：0009 时区相关（本机 UTC+8 成立，`TZ=UTC` 会掩盖）；0035 严重度取决产品意图。
+
+**定论**：方向 B 全链跑通——检测**能**找到 gold 结构上看不见的真 bug；验证（gold-blind）+ 回写 + **投票去噪**后，这些 bug 可**可靠**转化为可测 recall（5-app 均值 0.261→0.365）。matcher 投票这把尺惠及**所有**未来打分，非仅这 5 个 app。**下一步候选**：(a) 把"验证→回写"推广到 `_eval_trusted.jsonl` 28-set（注意 matcher 成本，需 timeout+控并发）；(b) 修 low-sev 空预测瑕疵；(c) 决定是否把 gold 回写纳入版本控制（数据集现 gitignored，未来会话不会自动拿到这 5 条新 gold）。
