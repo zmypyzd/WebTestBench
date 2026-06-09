@@ -346,3 +346,27 @@ Ran the real ablation on record **0002** (the designated judgment-miss target). 
 **caveat**：0009 时区相关（本机 UTC+8 成立，`TZ=UTC` 会掩盖）；0035 严重度取决产品意图。
 
 **定论**：方向 B 全链跑通——检测**能**找到 gold 结构上看不见的真 bug；验证（gold-blind）+ 回写 + **投票去噪**后，这些 bug 可**可靠**转化为可测 recall（5-app 均值 0.261→0.365）。matcher 投票这把尺惠及**所有**未来打分，非仅这 5 个 app。**下一步候选**：(a) 把"验证→回写"推广到 `_eval_trusted.jsonl` 28-set（注意 matcher 成本，需 timeout+控并发）；(b) 修 low-sev 空预测瑕疵；(c) ~~决定是否把 gold 回写纳入版本控制~~ **已解决**：数据集仍 gitignored，但 5 条 gold 增量导出为 tracked 幂等脚本 `process/gold_writeback_5apps.py`（按 content 判重、id 取 max+1、改前备份）。**fresh clone 跑一次即同步**：`python process/gold_writeback_5apps.py`。已验证：live 数据集上全 SKIP（幂等），pre-writeback 备份上全 APPLY 还原 id 18/16/17/19/27。
+
+---
+
+## 变异 catch-rate 尺：7-app × 2-mutant (CS+IX) 扩规模 (2026-06-10)
+
+**动机**：方向 B 首个 mutation pilot 只跑 3-app × 1 CS mutant（catch_rate 0.333，n=3，pipeline 验证非测量）。本轮把硬化后的 harness（PR#8 / `c2ced91`）扩到 **7-app × 2-mutant**：`--mutants-per-app 2` 经 `QUOTA=[constraint,interaction,...]` 按 `k%len` 映射 → k=0→**CS**、k=1→**IX**（无需单独的 class flag）。命令为交接文档里的标准跑法（外层 `timeout 18000` 硬墙 + `--concurrency 2` + `--mutant-timeout 2400` + MiniMax-M3 独立 HTTP 判定）。3 个缓存的 CS mutant（0009/0037/0080）检测续跑、用 MiniMax 重判。
+
+**结果（14 mutant 全 `valid`，0 invalid / 0 suspect / 0 超时 / 0 硬失败 / 0 僵尸服务器——硬化在 7-app 规模扛住了）**：
+
+| 类别 | 抓到/总 | catch_rate |
+|---|---|---|
+| 总体 | 5/14 | **0.357** |
+| CS | 2/7 | 0.286 |
+| IX | 3/7 | **0.429** |
+
+逐只（✅抓/❌漏）：CS 0009✅ 0089✅，0035❌ 0037❌ 0070❌ 0074❌ 0080❌；IX 0035✅ 0037✅ 0080✅，0009❌ 0070❌ 0074❌ 0089❌。归档于 `outputs/_mutation_probe/summary_7app_csix.json`（防下次 run 默认 `--out summary.json` 覆盖；旧 3-app 基线文件已被本轮覆盖，但那 3 条记录在新文件里完整复现）。
+
+**观察**：
+1. **复现性**：3-app CS 子集（0009/0037/0080）结果与首个 pilot 完全一致（0009 抓 3-0、0037/0080 漏 0-3）→ 指标稳定可重复。扩到 7-app 后 CS 0.333→0.286（新 4 app CS 仅 0089 抓到）。
+2. **IX(0.429) > CS(0.286)**：约束/守卫逻辑（校验、guard、`<` vs `<=`）这类"沉默 bug"是 agent 的软肋，比交互可观察类更难抓。
+3. **"漏"里多是近失**：好几个 ❌ 其实是检测抓到了**另一个真 bug** 而非注入那只——0035 CS 抓"空消息被接受"漏"空邮箱被接受"（同校验家族、相反字段）；0074 CS 报"拖拽手柄从不渲染"（比注入的反相逻辑更严重）。严格匹配**低估**真实查 bug 能力，这是变异尺"宁严勿松"的代价，与 [[gold-incompleteness-diagnostic]] 一致（指标只测"抓到特定注入"，不测"找到任何真 bug"）。
+4. **印证开放问题**：0070 m1 有一票 `"unparseable verdict"`（`parse_catch` 裸大括号解析偏差），另两票一致 False、本例结论稳健，但解析 bug 确实存在 → 下一步 Phase 2 修。
+
+**定论**：硬化后的变异尺在 7-app 规模上**干净跑通**（14/14 valid，零异常），给出方向 B 的第二根 gold-independent 刻度：总体 catch_rate 0.357、IX>CS。CS 偏低 + 大量"近失"共同指向检测的**约束类敏感度**与**匹配严格度**两个可改进面。
