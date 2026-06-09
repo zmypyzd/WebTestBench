@@ -345,4 +345,4 @@ Ran the real ablation on record **0002** (the designated judgment-miss target). 
 
 **caveat**：0009 时区相关（本机 UTC+8 成立，`TZ=UTC` 会掩盖）；0035 严重度取决产品意图。
 
-**定论**：方向 B 全链跑通——检测**能**找到 gold 结构上看不见的真 bug；验证（gold-blind）+ 回写 + **投票去噪**后，这些 bug 可**可靠**转化为可测 recall（5-app 均值 0.261→0.365）。matcher 投票这把尺惠及**所有**未来打分，非仅这 5 个 app。**下一步候选**：(a) 把"验证→回写"推广到 `_eval_trusted.jsonl` 28-set（注意 matcher 成本，需 timeout+控并发）；(b) 修 low-sev 空预测瑕疵；(c) 决定是否把 gold 回写纳入版本控制（数据集现 gitignored，未来会话不会自动拿到这 5 条新 gold）。
+**定论**：方向 B 全链跑通——检测**能**找到 gold 结构上看不见的真 bug；验证（gold-blind）+ 回写 + **投票去噪**后，这些 bug 可**可靠**转化为可测 recall（5-app 均值 0.261→0.365）。matcher 投票这把尺惠及**所有**未来打分，非仅这 5 个 app。**下一步候选**：(a) 把"验证→回写"推广到 `_eval_trusted.jsonl` 28-set（注意 matcher 成本，需 timeout+控并发）；(b) 修 low-sev 空预测瑕疵；(c) ~~决定是否把 gold 回写纳入版本控制~~ **已解决**：数据集仍 gitignored，但 5 条 gold 增量导出为 tracked 幂等脚本 `process/gold_writeback_5apps.py`（按 content 判重、id 取 max+1、改前备份）。**fresh clone 跑一次即同步**：`python process/gold_writeback_5apps.py`。已验证：live 数据集上全 SKIP（幂等），pre-writeback 备份上全 APPLY 还原 id 18/16/17/19/27。
