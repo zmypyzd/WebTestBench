@@ -298,20 +298,23 @@ def test_get_matches_union_recovers_one_of_three(tmp_path):
 
 
 def test_get_matches_valid_empty_ballot_kept_not_dropped(tmp_path):
-    """A valid-empty [] ballot is a SURVIVOR; with empty preds -> aggregate []."""
+    """With NON-empty preds, a valid-empty [] LLM reply is a SURVIVOR (not a
+    parse failure): both ballots are cast and aggregate to a single (pred, None)
+    row for the uncovered prediction. (Empty PREDS short-circuit before any
+    ballot is cast — that path is covered separately.)"""
     p = _bare_pipeline(match_votes=2)
     p._call_api = _ScriptedCalls([
         (True, "[]", None),
         (True, "[]", None),
     ])
     out = p._get_matches(
-        instruction="i", gold_items=GOLD, pred_items={},
+        instruction="i", gold_items=GOLD, pred_items=PRED,
         output_dir=tmp_path, source="result", retry=1,
     )
-    # Survived (not None) and aggregated to an empty list.
-    assert out == []
+    # Both ballots survived (valid-empty, not dropped); p1 is uncovered -> None.
+    assert [tuple(r) for r in out] == [("p1", None)]
     cache = json.loads((tmp_path / "score_match_ids.json").read_text())
-    assert cache["matches"] == []
+    assert [tuple(r) for r in cache["matches"]] == [("p1", None)]
     assert cache["votes"] == 2
 
 
@@ -393,6 +396,28 @@ def test_get_matches_empty_cache_matching_votes_and_empty_preds_short_circuits(t
     )
     assert out == []
     assert sentinel.calls == 0  # did NOT burn K calls on empty-pred record
+
+
+def test_get_matches_empty_preds_no_cache_short_circuits_without_api(tmp_path):
+    """Empty preds with NO cache -> return [] and write an empty cache WITHOUT
+    burning any matcher calls. Each ballot is a real (~60-80s MiniMax) call that
+    can only return []; the result-source empty-pred case is handled upstream in
+    _process_record, so this guards the surviving checklist-fallback path
+    (missing result + --use_checklist_fallback + checklist.md parsed to 0 items).
+    """
+    p = _bare_pipeline(match_votes=3)
+    sentinel = _ScriptedCalls([])  # any call -> (False, None, None)
+    p._call_api = sentinel
+    out = p._get_matches(
+        instruction="i", gold_items=GOLD, pred_items={},
+        output_dir=tmp_path, source="result", retry=2,
+    )
+    assert out == []
+    assert sentinel.calls == 0  # the optimization: zero API calls on empty preds
+    # Empty artifact persisted + self-consistent with the empty-cache reuse path.
+    cache = json.loads((tmp_path / "score_match_ids.json").read_text())
+    assert cache["matches"] == []
+    assert cache["votes"] == 3
 
 
 def test_get_matches_k1_uses_one_match_once_path(tmp_path):
