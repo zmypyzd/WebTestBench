@@ -386,3 +386,19 @@ Ran the real ablation on record **0002** (the designated judgment-miss target). 
 逐 app×类格点（✓=抓）：0009 `✓·✓✓` / 0035 `·✓✓✓` / 0037 `·✓·✓` / 0080 `·✓✓·` / 0089 `✓·✓·` / **0070 `····` & 0074 `····`（4 类全漏，盲区）**。
 
 **观察**：(1) 明确梯度 **FT(0.571) > IX=CT(0.429) > CS(0.286)**——功能性 bug 最易抓、约束类最难,印证 2 类档的 CS 软肋结论并扩展到全类。(2) **0070/0074 两个 app 4 类全漏**是最强的盲点信号(0070=工作流"禁用按钮仍可点"序列约束、0074=数据管理排序/拖拽)——这两个恰是验证-5 回写里**没碰过**的 app,值得后续重点白盒看。归档 `outputs/_mutation_probe/summary_7app_4class.json`。
+
+---
+
+## 方向 B 推广：28-set verify→回写 (Phase 4，2026-06-10)
+
+把方向-B 的"发现→gold-blind 验证→回写"链从 7-app mini 集**推广到 28-record `_eval_trusted.jsonl`**(direction-2)。
+
+**① 检测**：28 集里仅 7 个已有 P1-A 检测(p1exp);对**缺的 21 个**补跑 P1-A 检测(7 分片并行、`--hunt_rounds 0`、sonnet CLI、确定性端口),28/28 覆盖、0 失败分片。共收割 **34 个 `EX-NN` 离清单候选**,排除已回写的 5 个 → **验证队列 29**。
+
+**② gold-blind 对抗验证(ultracode 工作流 `outputs/_p4_verify/verify_workflow.js`)**:每候选 pipeline **验证(3 视角:机制 file:line / 用户可观察 / instruction 是否承诺)→ 独立 skeptic 力图反驳**,合并裁决写 `outputs/_p4_verify/v_<sid>_<exid>.json`。58 agent / 2.37M tok / ~9min。**gold-blind 经审计零违规**(grep 全 agent transcript:0 次读 `WebTestBench.jsonl`/`_eval_trusted.jsonl`;只读 app `src/`)。持久化/刷新丢数据类按用户定的策略**逐个对各 app instruction 判**。
+
+**③ 结果**:**21 确认(15 real + 6 likely),8 not_a_bug,0 refuted**。not_a_bug 多为"instruction 未承诺"的正确排除(持久化 0001-04/0003/0025/0100、0015 匿名重投、0047-02 重名、0072 订单、0076-01 大小写)——这正是 [[gold-incompleteness-diagnostic]]"对实判而非对 gold 判"的应用。
+
+**④ 回写**:经用户检查点定 scope = **只回写 15 real**(6 likely intent-dependent,暂不写)。tracked 幂等脚本 `process/gold_writeback_p4_15.py`(分组支持一 app 多 bug、按 content 判重、id 取 max+1、改前备份 `.bak-gold-writeback-p4`),写入 13 个 app 的 gold。类分布 FT 10 · CS 3 · CT 2 · IX 0(注:写回的 15 real 里 IX 那条 0062 计为 interaction,CS 含 0001-03/0014-01/0076-02)。最严重:0056 `<SelectItem value="">` 整页崩溃(critical)。
+
+**定论**:verify→回写链在 28-set 上跑通——从 21 个 app 的检测里,gold-blind 对抗验证净得 **15 条 gold 缺失的真 bug**(+5 先前 = 20 条跨 18 app),全部可由 `process/gold_writeback_*.py` 在 fresh clone 复现。**下一步候选**:(a) 6 likely 逐条定夺;(b) 0070/0074 变异盲区白盒深挖;(c) 在扩充后的 gold 上重测 matcher-voting recall。
