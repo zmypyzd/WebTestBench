@@ -419,3 +419,16 @@ ultracode 双线工作流（87 agents；尾部 3 个收尾 agent 撞 session lim
 - 猎虫：**9 real + 2 likely 确认 / 2 反驳**。7 条 real & off-gold 回写候选（0070-C1/C5、0074-C1/C3/C4/C5/C7）+ 3 条 gold pass=True 翻转候选（0070#7/#8、0074#13）——**均待拍板，未回写**。0074 确认 bug 与其 4 个 missed mutant 落在同一批盲面（排序状态/搜索语义/编辑路径校验/空值文案），印证"检测盲区 = gold 缺失区"。
 - 改进项：harness 加 manifestation/reachability 预检 + 判官部分匹配规则；检测提示词加「逐字读文本节点 / 状态词对照 / 同控件二次激活」三规则。
 - 报告：`outputs/_q3_blindspot/report.md`（synthesis_data.json 含全部票据）。
+
+## 开放项依次落地：Q3 回写 ×9 + matcher 极性规则 (2026-06-10)
+
+**Step 1 — Q3 回写（7 real & off-gold）**：`process/gold_writeback_q3_7.py`（commit 2684440）。0070 +2（id17 一次性 save gate、id18 模拟终态矛盾）、0074 +5（id19 悬空 sortConfig、id20 搜索匹配存储值、id21 重命名绕校验、id22 import 流程缺失、id23 空日期 '' 非 null）。备份 `.bak-gold-writeback-q3`，幂等已验。
+
+**Step 2 — 翻转候选裁决（追加不翻转）**：`process/gold_writeback_q3_edit2.py`（commit c1c0b1c）。0070 +2 条件项（id19→#8 的 filtered-list 绕过、id20→#7 的 rename 路径绕过）；理由：#7/#8 在 normal path 真实成立，翻转会把正确的 PASS 观察打成 FN，追加让两类 agent 都可被正确计分。0074#13/C6（likely 级）缓议不动。**gold 累计 = 29 verified bugs / 20 apps**（0070 现 20 items/9 bugs，0074 现 23 items/10 bugs）。
+
+**Step 3 — matcher 极性盲匹配规则（branch `tune/matcher-inverted-phrasing`，merge c437bfa）**：`PROMPT_MATCH_ITEM` 新增规则 3——gold 正向预期 vs pred 故障描述的同面反极性对必须匹配。13-record 受控 A/B（同预测同 gold、K=3，对照 p1exp_p4newgold 基线）：
+- 靶向 3 条全修复：0020#17 cov-pass→TP、0062#14 / 0088#11 unlinked→TP（全部经 EX-01）。
+- 总体 P 0.6708→**0.8195**、R 0.4108→**0.4672**、F1 0.4771→**0.5571**。
+- 唯一回归疑点 0076#17 经 6-run 对照（新旧 prompt 各 ×3）证伪：两臂均 0/3，EX-02 在姊妹 gold bug #9/#17 间摇摆，属 record 固有歧义 + matcher 跨时段漂移，与 prompt 无关。0021 的新 FP（CT-01→#16）是极性规则正确连接后暴露的 agent-vs-gold 真实分歧，非误连。
+- 教训：MiniMax key 必须用完整值（`~/intership/minimax_api.md` 的 key 有 130 字符，截断版一度可用后被 401）；scoring 零分 fallback 也会写 score.json，分片成功检查必须验 `score_match_ids.json` 的 votes+matches。
+- 工件：`outputs/p1exp_p4newgold_mfix/`（新 prompt 13-record 跑批）、`outputs/mfixstab_{new,old}{1,2,3}/`（0076 稳定性对照）。
