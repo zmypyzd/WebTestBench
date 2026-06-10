@@ -402,3 +402,20 @@ Ran the real ablation on record **0002** (the designated judgment-miss target). 
 **④ 回写**:经用户检查点定 scope = **只回写 15 real**(6 likely intent-dependent,暂不写)。tracked 幂等脚本 `process/gold_writeback_p4_15.py`(分组支持一 app 多 bug、按 content 判重、id 取 max+1、改前备份 `.bak-gold-writeback-p4`),写入 13 个 app 的 gold。类分布 FT 10 · CS 3 · CT 2 · IX 0(注:写回的 15 real 里 IX 那条 0062 计为 interaction,CS 含 0001-03/0014-01/0076-02)。最严重:0056 `<SelectItem value="">` 整页崩溃(critical)。
 
 **定论**:verify→回写链在 28-set 上跑通——从 21 个 app 的检测里,gold-blind 对抗验证净得 **15 条 gold 缺失的真 bug**(+5 先前 = 20 条跨 18 app),全部可由 `process/gold_writeback_*.py` 在 fresh clone 复现。**下一步候选**:(a) 6 likely 逐条定夺;(b) 0070/0074 变异盲区白盒深挖;(c) 在扩充后的 gold 上重测 matcher-voting recall。
+
+## 开放问题 1+3：20-bug gold 复测 + 0070/0074 盲区白盒 (2026-06-10)
+
+ultracode 双线工作流（87 agents；尾部 3 个收尾 agent 撞 session limit，从 transcript 恢复后主循环补完）。
+
+**Q1 — P4 回写量化（13 records，K=3 双臂受控 A/B，旧 gold=`.bak-gold-writeback-p4`）：**
+- Overall P/R/F1 **0.6095/0.3538/0.3979 → 0.6708/0.4108/0.4771**（+6.1/+5.7/+7.9pt，三项同涨：EX 预测由 FP 转 TP）。
+- linkage 审计：**12/15 回写 item 计入 TP（10 条经 EX-NN）**；3 条失败全在 matcher 端（0020#17 错连到 PASS 项、0062#14/0088#11 有语义等价 EX-01 却未连）→ 「gold 正向预期 vs pred 故障现象」反向措辞在 K=3 下仍 ~20% 漏连，真实 recall 被低估 ~3 bug。
+- K=3 跨运行漂移未归零：3/13 records 旧 item ±1 TP（0076 的 recall 降全是漂移）——看聚合，勿读单 record。
+- 报告：`outputs/_q1_rescore/report.md`（audit_refined.json 为基线数据）；版本目录 `outputs/p1exp_p4{old,new}gold`。
+
+**Q3 — 盲区白盒（8 诊断 + gold-blind 猎虫 + 39 张对抗验证票）：**
+- 漏检诊断：0070 m0/m1/m2 = **mutant 无效**（CSS-only 被原生 disabled 属性中和 ×2、死代码 NavLink ×1，validity 判官误放行）；0074 m0 = **判官假阴性**（agent 已报 FAIL 引用变异谓词）。真 miss 仅 4 个：misjudged_pass ×3（文案/状态词未核对）+ not_exercised ×1（未对同字段二连点）。
+- **catch_rate 修正：12/28=0.429 → 13/25=0.520**（FT .667 > CS=IX .500 > CT .429，CT 成最弱类）。`summary_7app_4class.json` 留档不改，引用以修正口径为准。
+- 猎虫：**9 real + 2 likely 确认 / 2 反驳**。7 条 real & off-gold 回写候选（0070-C1/C5、0074-C1/C3/C4/C5/C7）+ 3 条 gold pass=True 翻转候选（0070#7/#8、0074#13）——**均待拍板，未回写**。0074 确认 bug 与其 4 个 missed mutant 落在同一批盲面（排序状态/搜索语义/编辑路径校验/空值文案），印证"检测盲区 = gold 缺失区"。
+- 改进项：harness 加 manifestation/reachability 预检 + 判官部分匹配规则；检测提示词加「逐字读文本节点 / 状态词对照 / 同控件二次激活」三规则。
+- 报告：`outputs/_q3_blindspot/report.md`（synthesis_data.json 含全部票据）。
