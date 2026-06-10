@@ -432,3 +432,7 @@ ultracode 双线工作流（87 agents；尾部 3 个收尾 agent 撞 session lim
 - 唯一回归疑点 0076#17 经 6-run 对照（新旧 prompt 各 ×3）证伪：两臂均 0/3，EX-02 在姊妹 gold bug #9/#17 间摇摆，属 record 固有歧义 + matcher 跨时段漂移，与 prompt 无关。0021 的新 FP（CT-01→#16）是极性规则正确连接后暴露的 agent-vs-gold 真实分歧，非误连。
 - 教训：MiniMax key 必须用完整值（`~/intership/minimax_api.md` 的 key 有 130 字符，截断版一度可用后被 401）；scoring 零分 fallback 也会写 score.json，分片成功检查必须验 `score_match_ids.json` 的 votes+matches。
 - 工件：`outputs/p1exp_p4newgold_mfix/`（新 prompt 13-record 跑批）、`outputs/mfixstab_{new,old}{1,2,3}/`（0076 稳定性对照）。
+
+## 隐患排查：衍生子集 jsonl 陈旧性 (2026-06-10)
+
+回写只改主 `WebTestBench.jsonl`，所有已抽取的子集副本静默保留旧 checklist——`_eval_trusted.jsonl` 在 P4+Q3 后已 **20/28 条陈旧**（138 vs 167 bugs），若被打分引用会用旧 gold 低估 recall。处置：新增 tracked 守卫 `process/check_subset_staleness.py`（审计全部子集；冻结的 A/B 输入 `_gwb5_*`、`_p4q1/*` 拒绝刷新；`--refresh` 带备份重写）。已刷新 8 个非冻结子集（`_eval_trusted`、`_eval_mini` + 6 个历史消融输入），审计全绿。**纪律：每次 gold 回写后跑一遍该脚本。**
