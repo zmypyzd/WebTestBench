@@ -465,3 +465,15 @@ branch `tune/mutation-precheck-judge`（merge `9aaedb6`），TDD 14 新测试，
 | CT | 0.429 | 0.429 (3/7) — 最弱类 |
 
 validity 28→25（0070 m0/m1 css-only、m2 unreachable）；判官翻转 3 个且全部通过对抗审查：0074 m0（报告引用了被变异谓词，原判官假阴性）、0035 m0（`&&`↔`||` 单谓词翻转的另一方向，memory 在案的 near-miss）、0037 m2（EX-01 证据原文即注入症状 '36mo'，黑盒报症状不担根因归因义务，2-1 通过）。其余 22 个判决与 v1 完全复现，判官稳定。0.600 > 先前 0.520 预测：预测只含 validity+假阴性两项，partial-match 规则额外治好两个已记录 near-miss。CT 仍是真盲区，与 mini-7 gold 基线的 by_class（CT 0.167 / IX 0.0）互证——检测提示词三规则（逐字读文本节点/状态词对照/同控件二次激活）是下一杠杆。
+
+## 检测提示词三规则 (dd3r)：变异尺 0.600→0.760，gold 尺被不完整性遮蔽 (2026-06-11)
+
+branch `tune/detection-3rules`（commit `2eb4cab`+）。§2 Verification Logic 新增三规则（Q3 盲区诊断的对症药，靶向 0070 m3 / 0074 m1·m2·m3 四个真 miss）：**逐字读文本节点**（CT 项读区域内每个文本节点：次级标签/计数器/"X of Y"/单位/空态）、**状态词对照**（Yes/No、On/Off、asc/desc 必须与控件真实状态比对）、**同控件二次激活**（toggle/排序同控件连点两次验证 A→B→A）。
+
+**变异尺（同 25 注入、鲜检测，sha256 防漂移）：19/25 = 0.760，+0.160**。逐类：**CT 0.429→0.714、IX 0.500→0.833**（双靶类大涨）、CS 0.667→0.833、FT 0.833→0.667（回吐）。翻盘 +7：0009 m1 IX、0037 m0 CS、0070 m3 CT、0074 m1 IX、0074 m2 FT、0080 m3 CT、0009 m0 CS(重跑)——**Q3 点名 4 真 miss 挽回 3**（0074 m3 状态词题没接住：注入在 Add/Edit 对话框标签，agent 只走了内联面）。回吐 −2 均非规则反作用：0037 m2 = 注意力置换（agent 看到 "36 months" 症状原文但归因给同场的真实年龄分类数据 bug）；0089 m2 = 探索路径方差（可选字段留空路径未行使）。
+
+**mini-7 gold 尺：F1 0.3817→0.3390（P 0.763→0.563，R 0.291→0.255），靶类 CT/IX 持平 0.1667/0.0**。但 FP 审计揭示精度跌幅主体是测量假象：**新增 FP 仅 6 个，白盒核验 5 个 REAL**（0037 复数 `PetsPage.tsx:100`、0037 年龄组数据错分 ×3、0037 卡片缺 shelterName【挑战 gold#13 pass=True】、0009 EditListing 无角色守卫、0074 空态文案误导），第 6 个（0074 卡片标题无标签）事实准确但严重度存疑。0070 +0.30（Q3 回写过同类 bug 的 app，规则收益可见）；0080 −0.25 / 0009 −0.17 为单样本检测方差（0080 丢 gold#11 TP 与规则无关）。**双尺合读：规则真实提升了微文案/状态/交互敏感度，gold 尺低报是因为新发现多落在 gold 盲区**——与 [[gold-incompleteness-diagnostic]] 同构，且变异尺正是为这种场景而立。
+
+**事故与硬化**：CLI 订阅额度 429 把首轮变异跑批烧穿（22/25 被静默标 invalid——deploy 成功但检测饿死）；0009 m0 在额度悬崖边降级运行（5 次 RateLimitEvent、84 vs 108 工具调用、CS-03 从未行使）误判 miss，干净重跑 caught。落地：`ml.is_rate_limited`（纯函数+测试）+ 探针 3-strikes 熔断（饿死 mutant 不写 result.json 保续跑性，commit `ab8af37`）；`mutation_probe --out-root`（同注入异 prompt 重测的标准姿势，commit `f491853`）。教训：**valid 数崩塌时先怀疑量测链路再怀疑被测物**；mini-7 跑批 + 变异跑批勿同窗叠放。0009 在新 prompt 下出合规产物费 3 次尝试（max-turns ×1、格式漂移 ×1）——格式方差仍是已知尾部风险（[[reverify-verdict-and-format-route]]）。
+
+**待拍板**：(a) merge `tune/detection-3rules`？变异尺强烈支持（+0.160、双靶类 +0.29/+0.33），gold 尺的 −0.04 由已证实的 gold 不完整性 + 方差解释；(b) 5 REAL 回写候选 + gold#13(0037) pass=True 挑战（追加 or 翻转）；(c) 若 merge，变异尺官方基线更新为 `summary_dd3r_final.json` 0.760。工件：`outputs/dd3r/`（gold 尺）、`outputs/_mutation_probe_dd3r/`（变异尺，污染件归档 `_tainted_run1`）。
