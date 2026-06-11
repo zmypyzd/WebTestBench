@@ -1,0 +1,359 @@
+{
+  "summary": "对抗审查 WebTestBench 评测管线:五维猎错 + 双镜头核验 + 完整性批评",
+  "agentCount": 66,
+  "logs": [
+    "五维猎错并行启动",
+    "猎错 30 项,事实成立 28,实质影响基线 17"
+  ],
+  "result": {
+    "total_found": 30,
+    "confirmed": [
+      {
+        "dimension": "metric-semantics",
+        "severity": "high",
+        "kind": "gaming-vector",
+        "title": "Degenerate all-FAIL strategy beats the official baseline F1; PASS verdicts are metrically worthless",
+        "file": "eval/scoring.py:1028-1052",
+        "claim": "The bug-oriented confusion matrix makes an agent that does NO verdict work and marks every checklist item FAIL outscore the official baseline on the headline macro F1. I reproduced the official m7dm_new numbers exactly (P/R/F1 = 0.7381/0.3301/0.4480), then re-ran the same 7 records with identical checklists and identical cached matches but every pred flipped to FAIL: macro = 0.3949/0.5724/0.4619 — F1 0.4619 > baseline 0.4480 (and recall 0.57 vs 0.33). Root causes are two asymmetries in _compute_metrics: (a) an UNCOVERED gold-ok item counts as TN (L1033 'if gold_meta[\"pass\"]: tn += 1'), identical to a covered+pass item, so omitting items you can't verify carries zero precision/recall cost; (b) a matched gold item with pred PASS produces exactly the same cell (TN or FN) as an uncovered one, so emitting a PASS verdict can NEVER improve P/R/F1 over silence — only FAIL verdicts move the metric. The mini-7 gold's 43% bug base-rate (62 bugs / 144 items, counted from _eval_mini.jsonl) makes blanket-FAIL precision (~0.39 macro) high enough that the recall jump dominates F1. Teams optimizing against this yardstick are being rewarded for verdict-flipping toward FAIL, not for testing.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "CONFIRMED for the gold yardstick, REFUTED for the mutation yardstick (my own experiment). (1) Gold (0.4480, outputs/m7dm_new): I independently reproduced the official macro byte-exact (0.7381/0.3301/0.4480) from real artifacts (score_match_ids.json + result_extracted.md + _eval_mini.jsonl) via the r"
+      },
+      {
+        "dimension": "metric-semantics",
+        "severity": "high",
+        "kind": "bug",
+        "title": "Match cache keyed only on (source, votes) — gold writebacks and rerun preds silently reuse stale matches; live instance exists for the 06-11 timedrift writeback",
+        "file": "eval/scoring.py:828-841",
+        "claim": "_get_matches reuses score_match_ids.json whenever stored_source==source and stored_votes==votes. The cache key contains NO fingerprint of the gold checklist, the predicted items, the matcher model, or the canonicalize flag. The team's standard workflow is gold writeback -> rescore in place, so a rescore after a writeback reuses matches computed against the OLD gold: newly appended gold-bug items (the 'append-not-flip' pattern) can never appear in cached matches, so they are forced FN even when the agent actually reported that defect — silently denying exactly the credit the writeback was meant to grant. This is LIVE, not hypothetical: commit f89ca69 (06-11 21:02) appended gold bugs to records 0002/0006, and 17 pre-existing caches for those records (outputs/reverify-on, p2abl-*, _evid_*, _cc_selfhunt, p1abl-*, all votes=1, mtimes 06-02..06-04) will be reused verbatim by any default K=1 rescore. The official m7dm_new baseline escaped only by accident — switching match_votes 1->3 invalidated the old votes=1 caches (its caches were freshly written 19:58-20:34, after the 18:03 dd3r writeback); the NEXT writeback followed by a votes=3 rescore will be corrupted. Secondary hazard: if detection is re-run and result_extracted.md's item ids change, cached matches reference pred ids absent from pred_items and _compute_metrics crashes with an unguarded KeyError at L1041 ('pred_items[pred_id][\"pass\"]').",
+        "material": false,
+        "impact": "minor",
+        "impact_reasoning": "The code flaw is real (eval/scoring.py:828-837 cache keyed only on source+votes; unguarded KeyError at :1041; --match_votes default 1 at :1351) and the 17 stale votes=1 caches for 0002/0006 exist as claimed. But it does NOT materially corrupt either official baseline. (1) Gold yardstick 0.4480: all "
+      },
+      {
+        "dimension": "metric-semantics",
+        "severity": "high",
+        "kind": "gaming-vector",
+        "title": "Unmatched FAILED predictions are invisible to precision — hedged-FAIL / EX flooding is nearly free and defect-anchored matching makes it asymmetric",
+        "file": "eval/scoring.py:1021-1024",
+        "claim": "_compute_metrics builds gold_to_preds only from pairs with gold_id is not None; every prediction the matcher leaves unmatched vanishes from the confusion matrix entirely (it only dilutes the unscored 'coverage' number, which does not enter F1). So an agent can flood arbitrarily many speculative FAIL items (including EX-NN off-checklist items): each one has upside (if the matcher attaches it to a gold bug -> TP) and almost no downside (unmatched -> free; the only cost is attachment to a gold-OK item -> FP). The matcher prompt makes the bet asymmetric in the agent's favor: rule 3 explicitly matches opposite-polarity defect claims and rule 4 ('defect-anchor', added 2026-06-11 together with the parser folding Bug Report Issue/Actual into '| defect ...' content at scoring.py L651-674) instructs the matcher to anchor failed preds on their claimed defect and bind them to the gold item whose requirement that defect violates — i.e., failed preds are steered toward gold BUGS, away from gold-ok items. Quantified in the official baseline: 7 of 39 failed preds (18%) are unmatched and cost nothing; record 0035 keeps precision=1.0000 despite 5 of its 14 FAILs being unmatched. With K=3 union voting (finding 4) each spam item gets three independent chances to attach to a gold bug.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "CONFIRMED at code level and replicated numerically. eval/scoring.py L1022-1024 drops every (pred, None) pair before the confusion matrix; aggregate_ballots (L37-46) uses explicit union semantics ('None is the ABSENCE of a vote') so one attach-vote in K=3 suffices; match_item.py rules 3-4 steer faile"
+      },
+      {
+        "dimension": "metric-semantics",
+        "severity": "medium",
+        "kind": "bias",
+        "title": "\"K=3 voting\" is a tau=1 union, not a majority vote — 23% of the baseline's final matches were 1-of-3 minority ballots, and K is a monotonic metric-inflating knob",
+        "file": "eval/scoring.py:31-118",
+        "claim": "aggregate_ballots treats a ballot's None as 'absence of a vote, not a competing vote' (L39-46): if even ONE of K ballots proposes a gold match and the other K-1 say None, the match WINS (mode is taken over non-None votes only, L113-115). So the advertised 'voting de-noise' only repairs matcher omissions; it cannot reject matcher hallucinations — a single flaky ballot mints a final match. Because matched-FAIL on a gold bug = TP (finding 1/3 interplay), each hallucinated minority match can directly mint a TP, and increasing K can only monotonically ADD matches (coverage and recall are non-decreasing in K). That makes --match_votes a free knob that inflates the very metric being optimized, and makes K=1 vs K=3 baselines incomparable. Measured on the official m7dm_new artifacts: 32 of 137 final matches (23.4%) appear in exactly 1 of the 3 stored ballots. The internal docs call this 'K=3 voting' / 'voting de-noises MiniMax-M3', which misrepresents union-any semantics as consensus.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "Core mechanism CONFIRMED, headline framing OVERSTATED, mutation baseline UNTOUCHED. (1) Code is union tau=1 exactly as claimed (eval/scoring.py:37,90-92,113-115): one ballot mints a match, None never vetoes; cannot reject hallucinations. I reproduced the official 0.7381/0.3301/0.4480 byte-exact from"
+      },
+      {
+        "dimension": "metric-semantics",
+        "severity": "medium",
+        "kind": "gaming-vector",
+        "title": "Strategic forfeiture: unparseable/empty records exit overall_no_missing, and a missing output DIR is silently dropped from BOTH overall averages instead of zero-scored",
+        "file": "eval/scoring.py:190-193,257-261",
+        "claim": "Two inconsistent exclusion paths let bad records be removed from headline averages rather than penalized. (a) L258: records flagged parse_error or empty_match are excluded from overall_no_missing — so an agent (or a prompt tweak) that emits format-mismatched result_extracted.md on its hardest apps gets those records dropped from the no_missing headline instead of counted as honest low scores; producing garbage strictly dominates producing a correct low-recall report whenever the team quotes overall_no_missing. (b) L190-193: if the record's output directory does not exist at all, run() does 'continue' WITHOUT creating a zero bundle — the record contributes nothing to scored_count or total_metrics, i.e. it is dropped from BOTH overall and overall_no_missing macro averages. This is inconsistent with the missing-FILE path (_create_missing_result_bundle, L1197-1219) which zero-scores the record into 'overall'. Net effect: deleting (or never creating) the worst records' directories raises the reported overall P/R/F1; the only trace is the counts.total vs counts.scored gap in score_avg.json, which the headline numbers ignore.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "Claim is factually correct (verified eval/scoring.py:190-193 dir-missing continue with no zero bundle; L257-261 parse_error/empty_match/missing excluded from overall_no_missing; inconsistent with L1197-1219 file-missing zero-bundle). However, it does NOT corrupt either official baseline as produced:"
+      },
+      {
+        "dimension": "metric-semantics",
+        "severity": "low",
+        "kind": "bug",
+        "title": "_compute_coverage counts matcher-emitted gold ids without verifying they exist in the gold checklist — coverage can exceed 1.0 (latent today)",
+        "file": "eval/scoring.py:990-1003",
+        "claim": "Coverage numerator is the set of all non-None gold ids in match_ids with NO membership check against gold_items: 'matched_gold = {gold_id for _, gold_id in matches or [] if gold_id is not None}' then 'len(matched_gold) / len(gold_items)'. A hallucinated gold id (e.g. matcher inventing '99' or 'FT-01', or an int-typed id in a legacy/hand-edited cache that bypasses aggregate_ballots' str-coercion) inflates coverage and can push it above 1.0; per-class coverage (_update_class_coverage, L312-330) is membership-checked, so the two coverage figures use different rules. I scanned every score_match_ids.json under outputs/ against the current dataset: 0 of 2,660 matched gold ids are currently out-of-gold, so the bug is latent — but the fresh path has no filter (aggregate_ballots only str-coerces, L93) and cached matches are returned verbatim (L835), so a single bad cache or matcher drift silently corrupts the Excel coverage row and class coverage divergence.",
+        "material": false,
+        "impact": "minor",
+        "impact_reasoning": "The code asymmetry is real (eval/scoring.py:998-1003 has no membership check vs the checked per-class path at L316-322; aggregate_ballots ~L94 only str-coerces and never sees gold_items; cached matches returned verbatim ~L834). But it does not materially corrupt either official baseline. (1) Gold ya"
+      },
+      {
+        "dimension": "matcher-chain",
+        "severity": "high",
+        "kind": "methodology",
+        "title": "Official 0.4480 baseline is circular: gold items written back from the evaluated run's own findings, then the same run re-scored as the baseline",
+        "file": "process/gold_writeback_dd3r_4.py:5 (+ outputs/m7dm_new/*/score_match_ids.json, tuning-log.md 2026-06-11 entries)",
+        "claim": "Four gold items (0009#19, 0037#18, 0037#19, 0074#24) were created directly from the dd3r run's own EX-02/CT-01/EX-01 findings — explicitly to neutralize that run's false positives — and then outputs/m7dm_new (the SAME dd3r predictions) was re-matched against the enlarged gold and declared the official P/R/F1=0.7381/0.3301/0.4480 baseline. At least 4 of the run's ~20 TPs are gold items authored from the run itself; precision rose mechanically (FPs deleted) and recall rose (TPs added). Even though the bugs were white-box verified real, the gold bug population is being selectively enriched with exactly the bugs this agent lineage finds, so recall against it partly measures test-retest self-agreement, not bug detection. Optimizing future prompts against this yardstick compounds the selection bias.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "CONFIRMED AND QUANTIFIED. The circular mechanism is real: process/gold_writeback_dd3r_4.py:6-8 explicitly says the dd3r run's \"6 NEW false positives\" were audited and 4 written back to gold; the 0009 item (line 63) even embeds the run's own probe URL \"/edit-listing/1\". outputs/m7dm_new score_match_i"
+      },
+      {
+        "dimension": "matcher-chain",
+        "severity": "high",
+        "kind": "gaming-vector",
+        "title": "Any matched FAIL on a gold-bug item counts as TP regardless of defect identity — 'Cannot Execute' failures harvest bug-detection credit",
+        "file": "eval/scoring.py:1041-1052 (+ eval/prompt/match_item.py:29-30)",
+        "claim": "TP requires only (gold pass=False) AND (any matched prediction has pass=False); the scorer never checks that the prediction's observed defect IS the gold defect. Prompt rules 3 (cross-polarity) and 4 (defect-anchor) actively pull FAIL predictions onto gold expectations in the same area. Consequence: a prediction marked FAIL because the feature was MISSING/untestable ('Cannot Execute') earns a TP on a gold bug about a specific behavior the agent never tested. Gaming vector: when any feature is absent, mark every dependent CS/IX/CT item FAIL with a 'cannot test' note — in 0035 this cascade yields 6 of the record's TPs. The defect-anchor rule also failed its own motivating case (0009 CS-05 double-booking still matched gold #9[ok] not #10[BUG], producing FP+FN), showing defect identity is not actually enforced anywhere in the chain.",
+        "material": false,
+        "impact": "minor",
+        "impact_reasoning": "Mechanism verified as claimed: scoring.py:1041-1052 grants TP on any matched FAIL with no defect-identity check, and match_item.py rules 3/4 pull FAILs onto gold items; 0009 CS-05 did mis-match gold#9 (FP+FN) despite being rule 4's motivating specimen (scoring.py:648-650). But quantification against"
+      },
+      {
+        "dimension": "matcher-chain",
+        "severity": "high",
+        "kind": "bias",
+        "title": "K=3 'voting' is a union, not a consensus: one ballot's match beats K-1 abstentions, so voting monotonically manufactures matches (incl. a minority-vote TP)",
+        "file": "eval/scoring.py:31-118 (aggregate_ballots; esp. 40-46, 90-98, 113-115)",
+        "claim": "None is treated as 'absence of a vote', so a gold match voted by 1 of 3 ballots wins over 2 abstentions; adding ballots can only ADD matches relative to K=1, never remove a spurious one. This inflates coverage and recall (a FAIL pred dragged onto a gold bug by a single flaky ballot becomes a TP) and is mislabeled as de-noising. Ties between different golds are broken by smallest numeric gold id (_gold_sort_key), an arbitrary content-blind rule that can decide TP vs FP when the tied golds have different pass flags. Additionally, when ballots fail (429s etc.) survivors are aggregated and cached as if full-K (see finding 6), so 'K=3' is not even guaranteed.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "CONFIRMED and quantified on the real artifacts; affects the gold yardstick materially, mutation yardstick not at all.\n\nVerification: replaying the cached `ballots` in outputs/m7dm_new/*/score_match_ids.json through aggregate_ballots (eval/scoring.py:31-118) reproduces the official 0.7381/0.3301/0.44"
+      },
+      {
+        "dimension": "matcher-chain",
+        "severity": "low",
+        "kind": "bug",
+        "title": "Defect folding cross-contaminates: 'cur' never resets at section boundaries, so a separate Bug-Report section's Issue/Actual lines fold into the last failed checkbox item (whose real defect is then suppressed by first-only dedupe)",
+        "file": "eval/scoring.py:651-674 (+ eval/canonicalize.py:74-76)",
+        "claim": "The folding loop tracks only checkbox lines (cb) and Issue/Actual lines (sub); '## Section' and other headings do not reset cur. canonicalize drops phantom '### BUG-xx' headings entirely (canonicalize.py:74-76) but leaves their '- Issue:'/'- Actual:' body lines in the text. So in the documented real dialect where bug reports live in a separate section (e.g. outputs/p2abl-base-r1/WebTestBench_0006 uses '## Bug Reports' + '### BUG-01 · CS-02' headings), if that section follows the checklist and the last checklist item is FAILED, the first foreign bug's Issue/Actual is folded into that unrelated item — and because of 'first Issue/Actual per item only' (scoring.py:670-671) the item's own real defect can never be attached. Rule 4 then anchors the matcher on the WRONG defect, capable of dragging the item onto a different gold bug (fake TP) or off its true one. Section order in agent output is uncontrolled, so this is a live hazard, not hypothetical formatting. Secondary: the [:200] truncation (scoring.py:673) demonstrably cuts mid-mechanism in real artifacts.",
+        "material": false,
+        "impact": "minor",
+        "impact_reasoning": "The code mechanism is real (eval/scoring.py:653-674 never resets `cur` at headings; eval/canonicalize.py:74-76 drops BUG-xx headings but keeps body lines), but measured against real artifacts it has zero incidence. (1) Gold baseline: re-parsing all 7 outputs/m7dm_new records with the exact productio"
+      },
+      {
+        "dimension": "matcher-chain",
+        "severity": "high",
+        "kind": "gaming-vector",
+        "title": "Precision is per-gold-item, so unmatched FAIL predictions cost zero and N false alarms on one gold-ok item collapse to a single FP",
+        "file": "eval/scoring.py:1021-1055",
+        "claim": "The confusion matrix iterates over gold items only: (pred, None) pairs are dropped at line 1022-1024, and multiple FAIL preds matched to the same gold-ok item produce exactly one FP. Total FP is bounded by the count of gold pass=True items, regardless of how many spurious FAIL items the agent emits. An agent optimized against this baseline is rewarded for spamming speculative FAIL/EX items: each one is a free lottery ticket (TP if it lands on a gold bug, zero cost if unmatched, shared single FP if it lands on a covered ok item). The headline precision 0.7381 therefore does not measure false-alarm rate and is not comparable across agents with different emission volumes. This interacts multiplicatively with findings 2 and 3 (polarity/defect-anchor rules plus union voting increase the land-on-gold-bug probability) and with finding 1 (unmatched FAILs that ARE real get written back into gold later, converting past free tickets into future TPs).",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "MECHANICS VERIFIED at eval/scoring.py: line 1022-1024 drops (pred, None) pairs from gold_to_preds; loop at 1028 iterates gold_items only; line 1041 `pred_pass = all(...)` makes N FAILs on one gold-ok item exactly 1 FP (line 1046-1047). num_pred_item is written to score.json but never used as a denom"
+      },
+      {
+        "dimension": "matcher-chain",
+        "severity": "high",
+        "kind": "bug",
+        "title": "Match cache keyed only on (source, votes): stale matches survive prediction/gold changes, can KeyError-crash scoring, and degraded-ballot records are frozen as full-K",
+        "file": "eval/scoring.py:828-840 (+ 870-877, 891-897, 1041)",
+        "claim": "Cache reuse checks only stored 'source' and 'votes' — no hash of result_extracted.md content, gold checklist content/ids, parser version, or matcher-prompt version. Given the repo's churn cadence (defect-folding changed pred content fed to the matcher; gold writebacks added/renumbered items on 2026-06-11), any re-scoring without manually deleting score_match_ids.json silently reuses matches computed against the OLD predictions/old gold: newly added gold ids can never be matched from cache (deflating recall of post-writeback gold), and a cached pred id absent from re-parsed predictions raises KeyError at scoring.py:1041 (pred_items[pred_id]) crashing the whole run, since fresh matches are filtered through pred_order but cached ones are returned unfiltered (line 835). Separately, a record whose ballots partially failed is aggregated from survivors but cached with the REQUESTED votes value, permanently masquerading as full-K consensus — 0080 in the official baseline was matched on 2 surviving ballots yet stored votes=3, and will never re-match.",
+        "material": false,
+        "impact": "minor",
+        "impact_reasoning": "The code facts are all confirmed (eval/scoring.py:828-835 reuses cache on (source,votes) only with no content fingerprint and no pred-id filtering; :891-897 stores requested votes not len(ballots); :1041 indexes pred_items unconditionally with no try/except around the :201 _process_record call), but"
+      },
+      {
+        "dimension": "mutation-harness",
+        "severity": "high",
+        "kind": "methodology",
+        "title": "Official 0.760 baseline was hand-spliced: a single missed mutant was re-run until it flipped, one-sidedly",
+        "file": "outputs/_mutation_probe_dd3r/summary_dd3r_final.json (vs summary_dd3r.json, summary_0009m0_redo.json)",
+        "claim": "The headline 19/25=0.760 is not the output of one harness run. summary_dd3r.json (mtime 16:55, 18/25=0.72) and summary_dd3r_final.json (mtime 17:16:55) differ in exactly ONE record: 0009 m0 caught False(0-3 votes)->True(3-0), taken from a manual single-mutant redo (summary_0009m0_redo.json, fresh detection at 17:16; original run/ was 12:46). Only the MISS was re-run; no caught mutant was audited for the same CLI-quota degradation, and other documented variance-misses (0037 m2 'attention displacement', 0089 m2 'path variance') were not re-rolled. The harness's own coded rule for rate-limit starvation (mutation_probe.py L205-209) did not apply — it only fires when result_md is empty, and 0009 m0's degraded run produced a full result — so the redo was an out-of-protocol judgment call. With tuning-log itself documenting ±2 detection-variance flips per run, retry-only-on-miss is strictly inflationary. Without the splice the baseline is 0.72; the claimed +0.160 vs the 0.600 baseline is 7-up/2-down discordant flips (McNemar p≈0.18, n.s.), and 19/25 carries a ±0.17 binomial 95% CI — the team is optimizing against a number whose last 4 points came from a cherry-picked rerun inside its own noise band.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "Claim verified in full from artifacts. (1) Splice: record-by-record diff of outputs/_mutation_probe_dd3r/summary_dd3r.json (mtime 16:55, 18/25=0.72) vs summary_dd3r_final.json (17:16, 19/25=0.76) shows exactly one differing record — (WebTestBench_0009, 0), caught False(0-3 votes)→True(3-0) — sourced"
+      },
+      {
+        "dimension": "mutation-harness",
+        "severity": "high",
+        "kind": "bug",
+        "title": "Judge parse failures count as 'no' votes and decided a verdict: 0074 m3 is a provable false miss (true score 20/25)",
+        "file": "scripts/mutation_lib.py:214-258 (parse_catch), :470-516 (_judge_http_one); artifact outputs/_mutation_probe_dd3r/WebTestBench_0074/m3/",
+        "claim": "An unparseable MiniMax-M3 ballot is converted to caught=False and still occupies a majority-vote slot (parse_catch returns {'caught': False, 'reason': 'unparseable verdict'}; _judge_http_one retries only HTTP failures — a 200 response with garbage content is accepted, never re-balloted). 4/75 ballots (5.3%) in the dd3r run were unparseable. For 0074 m3 (CT), 2 of 3 ballots were unparseable and the single genuine ballot was caught=True — the agent's result_extracted.md line 123 literally reports the injected bug ('EX-01: Checkbox label in Add/Edit Entry dialog is inverted — \"No\" shown when checked, \"Yes\" shown when unchecked'), and the true ballot quotes the mutated `{value ? 'No' : 'Yes'}` expression. Final verdict: caught=False. So even the spliced 19/25 undercounts to the agent's detriment here (arguably 20/25=0.80), the per-class CT number (weakest class, driving prompt-tuning decisions) is wrong, and the tuning-log narrative ('0074 m3 状态词题没接住…agent 只走了内联面') is factually false. 0035 m3's catch was likewise thinned to 2-1 by one unparseable ballot — transport noise, not judge disagreement, sets vote margins.",
+        "material": true,
+        "impact": "corrupts-baseline",
+        "impact_reasoning": "Verified end-to-end against real artifacts. Code: scripts/mutation_lib.py:252 converts any unparseable judge ballot to a full caught=False vote; :502-513 retries only HTTP-level failures, so a 200 response with garbage content is accepted once and never re-balloted (L473-475 docstring codifies 'the "
+      },
+      {
+        "dimension": "mutation-harness",
+        "severity": "medium",
+        "kind": "bug",
+        "title": "Duplicate injections double-counted: 0009 m0 and m1 are byte-identical mutants scored as two valid catches in two different fault classes",
+        "file": "scripts/mutation_probe.py:103-124 (no dedup in run_one_mutant/generate path); artifacts outputs/_mutation_probe_dd3r/WebTestBench_0009/m{0,1}/new_file.txt",
+        "claim": "Nothing in the harness deduplicates generated mutants. For 0009, m0 (labeled CS) and m1 (labeled IX) have byte-identical new_file.txt — the same single-character edit (`date <= checkIn` -> `date < checkIn` at BookingForm.tsx:146) — yet both sit in the 25-mutant denominator and both count as catches (judges matched the same CS-03 item for both). One bug thus contributes 2/25 (8%) of the headline metric, and the per-class breakdown the team steers by is corrupted: IX's 5/6=0.833 includes a constraint bug wearing an IX label, and a single detection success/failure is double-weighted. 0070 m0/m1 are also byte-identical (sha 877ab70f78; both happened to be precheck-invalidated here, but the same generator behavior feeds the denominator whenever prechecks pass). The class quota (QUOTA[k % 4]) guarantees class LABELS, not class-distinct or distinct faults.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "CLAIM VERIFIED against real artifacts. sha256 confirms 0009 m0/m1 byte-identical (7c3d9d12fd...) and 0070 m0/m1 byte-identical (877ab70f78...); no dedup logic exists anywhere in scripts/mutation_probe.py (generate-or-reuse path lines 114-124) or scripts/mutation_lib.py (grep for dedup/hash/duplicate"
+      },
+      {
+        "dimension": "mutation-harness",
+        "severity": "high",
+        "kind": "bias",
+        "title": "Detection failures exit the denominator as 'invalid' instead of counting as misses — catch rate is inflated whenever the agent crashes, times out, or emits no result",
+        "file": "scripts/mutation_probe.py:182,191-196,212-213; scripts/mutation_lib.py:33-39 (classify_validity), :201-211 (is_rate_limited)",
+        "claim": "Three paths remove a mutant from aggregate()'s valid-only denominator for reasons that are properties of the DETECTION RUN, not the mutant: (1) any exception during agent.run() with no result_extracted.md -> deploy_ok=False -> 'invalid' (L182); (2) asyncio timeout -> 'invalid' (L191-196) — and slow runs correlate with hard-to-find mutations; (3) a deployed app whose detection finishes but writes an empty/missing result -> classify_validity(deploy_ok=deploy_ok and bool(result_md)) -> 'invalid' (L213). An agent that gives up on hard mutants is rewarded by exclusion rather than penalized as a miss. The sole carve-out, is_rate_limited, matches exactly one SDK error shape ('\"api_error_status\": 429'); 5xx/overloaded/other CLI-quota starvation shapes still fall into the silent-invalid channel — the very mechanism that mislabeled 22 mutants in the documented dd3r incident, of which only the literal-429 case was fixed. Relatedly, the tuning log records 0009 needing 3 attempts to produce compliant output ('max-turns ×1、格式漂移 ×1'): format-failure runs get re-rolled until compliant, giving extra detection lottery tickets, while compliant-but-missed runs are final.",
+        "material": false,
+        "impact": "minor",
+        "impact_reasoning": "The cited code paths exist exactly as claimed (mutation_probe.py:182 exception->invalid, :190-196 timeout->invalid, :213 empty-result->invalid; mutation_lib.py:57 valid-only denominator, :211 literal-429-only carve-out). But quantified against the real artifacts, they touched ZERO records in both of"
+      },
+      {
+        "dimension": "mutation-harness",
+        "severity": "medium",
+        "kind": "bug",
+        "title": "Manifestation precheck falsely invalidates user-visible text mutations (including aria-labels), silently narrowing the CT mutant space",
+        "file": "scripts/mutation_lib.py:268-274,333-365 (manifestation_verdict, _CSS_TOKEN_RE, _A11Y_OBSERVABLE_CLASSES)",
+        "claim": "manifestation_verdict rejects any string-literal-only change whose changed tokens are lowercase-with-dash/colon/bracket, assuming they are Tailwind utilities. But dash-containing DISPLAY text passes the same regex: I executed the function's exact logic on (a) 'in-stock'->'out-of-stock' (visible status text), (b) format string 'yyyy-mm-dd'->'dd-mm-yyyy' (visible date output), (c) aria-label 'close-dialog'->'open-dialog' (literally part of the a11y tree the agent tests against) — all three return 'css_only_not_a11y_observable' and would be pre-rejected before detection and dropped from the denominator. This is a false-rejection class that disproportionately removes Content-class mutants — the class the team has flagged as the detection blind spot — so the yardstick stops measuring exactly where it is most needed. (Secondary: is_reachable's BFS misses import.meta.glob / template-literal dynamic imports / non-@ aliases and would mark such files 'unreachable'; I verified the current 7-app corpus contains none of these patterns, so this leg is latent, not active. The three dd3r precheck rejections — 0070 m0/m1 css-only, m2 dead NavLink — match the prior white-box diagnosis and are correct.)",
+        "material": false,
+        "impact": "minor",
+        "impact_reasoning": "The code-level defect is real: manifestation_verdict (scripts/mutation_lib.py:333-365) would falsely classify string-literal-only edits whose changed tokens are all lowercase-dash shaped (e.g. 'in-stock'->'out-of-stock', dash-form aria-labels) as css_only_not_a11y_observable, since _CSS_TOKEN_RE (L2"
+      },
+      {
+        "dimension": "mutation-harness",
+        "severity": "medium",
+        "kind": "methodology",
+        "title": "Resume/re-measure flow re-rolls judge votes on cached results and can judge a NEW injection against a STALE result.md",
+        "file": "scripts/mutation_probe.py:114-124,199-230; scripts/mutation_lib.py:42-49 (should_regenerate); eval stage-skip per CLAUDE.md (_should_skip_stage)",
+        "claim": "run_one_mutant never short-circuits on an existing result.json, so the documented resume procedure (re-run after the 429 circuit breaker trips) reprocesses every completed mutant: detection is skipped via the agent's _should_skip_stage (run/result.md exists) but the 3-vote judge re-runs and result.json is overwritten — verdicts can drift between 'resumes' with zero detection change (the repo's own K=3 drift notes confirm vote re-sampling flips outcomes; in this run two verdicts sat at 2-1/1-2 margins). Worse, cache invalidation is one-sided: should_regenerate keys only off the three injection files, and nothing ties run/ artifacts to an injection hash — so running with --regen-mutants (or pre-seeding an --out-root with new injections) over a directory whose run/ survives makes agent.run() skip detection and the judge score the NEW injected bug against the OLD app's result.md. The dd3r artifacts themselves are clean (injected.json 12:29, all run/ outputs 12:46-13:55 fresh; the 0009 m0 redo's run/ was rebuilt at 17:16), but the integrity of any future same-injection re-measure rests on operators manually clearing run/, not on the harness. The summary also carries no marker when written after a circuit-breaker trip, so a partial-denominator summary.json is indistinguishable from a complete one.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "CLAIM VERIFIED IN CODE: scripts/mutation_probe.py run_one_mutant (L114-135) never short-circuits on an existing result.json; cache reuse keys only off injected.json/patch_meta.json/new_file.txt (mutation_lib.py L42-49); the judge always re-runs when result_md is non-empty (L221-226) and overwrites r"
+      },
+      {
+        "dimension": "methodology-circularity",
+        "severity": "high",
+        "kind": "bias",
+        "title": "Self-confirmation saturates the baseline: 40% of m7dm_new's true positives are gold items the same agent lineage wrote back, single-judge verified; future variants finding DIFFERENT real bugs are structurally penalized",
+        "file": "eval/scoring.py:1020-1052; tuning-log.md:503",
+        "claim": "Live mini-7 gold contains 62 pass=False bugs, of which 18 (29%) were written back from this agent lineage's own outputs (P1-A EX finds, Q3 white-box hunt, dd3r FP audit — all verified by Claude-based 'ultracode' workflows, i.e., the same actor/model family judging its own findings; no independent human adjudication). In m7dm_new, 8 of 20 micro TPs (40%) land on self-written gold ids; even the starting baseline p1exp_mini7 had 7/17 (41%). This biases all future comparisons toward the incumbent: scoring.py's confusion matrix iterates ONLY gold items (line 1028) and drops preds matched to None (lines 1022-1024), so a different agent's novel-but-real bug reports are invisible to P/R (no TP credit, no FP cost — tuning-log.md:503 admits 'unmatched 的 FAIL 预测对 P/R 完全不可见'), while the incumbent's past finds sit in gold earning recall. This is also a gaming vector: emit many speculative FAIL items — matcher rule 5 ('Do NOT force matches') defaults them to unmatched at zero P/R cost, then write back whichever survive verification.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "VERIFIED AND QUANTIFIED. Mechanism: eval/scoring.py:1022-1024 drops preds matched to None and :1028 iterates only gold items, so unmatched FAIL predictions are invisible to P/R (team-admitted in tuning-log.md '度量语义备忘'); eval/prompt/match_item.py:31 rule 5 makes non-aligning preds default to None at "
+      },
+      {
+        "dimension": "methodology-circularity",
+        "severity": "medium",
+        "kind": "bug",
+        "title": "Append-not-flip creates polarity-blind sibling gold pairs the matcher coin-flips between, swinging TP <-> FP+FN; siblings also double-count one root cause",
+        "file": "eval/prompt/match_item.py:13-31; process/gold_writeback_dd3r_4.py:73-75",
+        "claim": "The accumulating 'conditional sibling' items (0009 #12[pass=True]/#19[bug], 0037 #13[pass=True]/#19[bug], 0002 #13/#21, 0070 #7/#19, #8/#20) are textually near-duplicates of opposite hidden polarity, but PROMPT_MATCH_ITEM shows the matcher only `\"gold_id\": \"description\"` — no pass labels — so which sibling a FAIL pred lands on is matcher luck, and the two outcomes are maximally different: sibling-bug = TP (+P,+R); sibling-ok = FP plus FN on the bug twin (−P,−R). This exact oscillation is documented and observed: in m7ng_new the 0037 shelter-name FAIL matched #13[ok] producing FP_goldids=['13'] with #19 as FN; in m7dm_new the same pred flipped to #19 as TP. The tuning log records 0076 EX-02 'swinging between sibling gold bugs #9/#17' and 0009 CS-03/04/05 all hitting #9[ok] as FPs offsetting the new TP. Separately, siblings double-count single defects in the recall denominator (e.g. 0002 #20+#21 are two facets of one seed-date/time-window root cause; 0009 #12+#19 turn one requirement into a TN slot plus a TP slot), inflating bug counts in the 7 records where this agent hunted (0074: 6 of 11 'bugs' are writebacks).",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "VERIFIED AND QUANTIFIED. Mechanism: eval/prompt/match_item.py:13-15 passes gold as id+description only (no pass labels), and process/gold_writeback_dd3r_4.py:73-75 self-documents the 'conditional sibling of gold #13, append-not-flip' design — so ok/bug near-duplicate twins exist that a polarity-blin"
+      },
+      {
+        "dimension": "methodology-circularity",
+        "severity": "medium",
+        "kind": "methodology",
+        "title": "Mutation yardstick gain 0.600→0.760 is not statistically significant (McNemar p≈0.18, n=25 single detections) and the official 19/25 includes an asymmetric miss-only rerun",
+        "file": "outputs/_mutation_probe_dd3r/summary_dd3r.json; tuning-log.md:473,477",
+        "claim": "The gold-independent mutation yardstick was the decisive evidence for merging dd3r (since the gold yardstick regressed). But the comparison is 25 paired single-sample binary outcomes with discordant flips +7/−2; exact McNemar two-sided p = 2*P(X≤2|n=9,p=0.5) ≈ 0.18 — not significant — and the log itself attributes flips to 'single-sample detection variance' and 'exploration-path variance' (0089 m2). Worse, the archived first pass shows 18/25=0.72 with 0009 m0 caught=False; only this MISS was rerun (summary_0009m0_redo.json: 1/1 caught) on the rationale of rate-limit degradation, producing the official 19/25=0.76. No catch was symmetrically rerun, and no pre-registered rerun criterion exists — a retry-until-caught policy applied only in the favorable direction inflates the new arm.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "CLAIM VERIFIED, and its statistical core is actually UNDERSTATED. From real artifacts: summary_dd3r.json shows first pass 18/25=0.72 with 0009 m0 caught=false; summary_0009m0_redo.json 1/1; summary_dd3r_final.json 19/25=0.76 merging only the miss-redo. Recounting paired flips vs the v2 baseline (sum"
+      },
+      {
+        "dimension": "methodology-circularity",
+        "severity": "medium",
+        "kind": "methodology",
+        "title": "Measurement-system rules (defect-anchor rule 4, polarity rule 3) were tuned on the exact failing specimens they were then scored on, with effect sizes equal to documented matcher-drift noise, on n=7",
+        "file": "eval/scoring.py:645-674; eval/prompt/match_item.py:29-30; tuning-log.md:412-413,429-434,497-501",
+        "claim": "Both matcher changes are teach-to-the-test: rule 3 (polarity) was written to fix the 3 named linkage failures from the Q1 audit (0020#17, 0062#14, 0088#11) and validated on the same 13 records containing them; rule 4 + the '| defect' parser fold (scoring.py:648-650 names its two target specimens in a comment: '0009 CS-05… 0037 FT-02 likewise') moved the official baseline 0.4142→0.4480 entirely via the single targeted flip (0037 FT-02→#17) — '其余 6 记录字节级零扰动'. The same Q1 audit documents K=3 matcher cross-run drift of ±1 TP on 3/13 records ('0076 的 recall 降全是漂移'), i.e., the entire measured effect (1 item flip) equals known noise magnitude. Per-record F1 SD in m7dm_new is 0.21 (SE≈0.08 at n=7), dwarfing both claimed deltas (+0.043, +0.034). No held-out records were used to validate either rule; both A/Bs were designed, run, judged, and merged by the same actor whose variant benefits.",
+        "material": false,
+        "impact": "minor",
+        "impact_reasoning": "The claim's facts are accurate but its materiality conclusion fails on three quantified grounds. (1) Mutation yardstick 0.760 is untouched: judge_catch (scripts/mutation_lib.py:459) judges raw result.md via USER_PROMPT['mutation_catch']; PROMPT_MATCH_ITEM/_parse_pred_items are used only by eval/scor"
+      },
+      {
+        "dimension": "methodology-circularity",
+        "severity": "medium",
+        "kind": "bug",
+        "title": "Frozen-yardstick discipline gap: score_match_ids.json caches carry no gold fingerprint and baselines record no gold-version identity, so re-scoring after writebacks silently reuses matches computed against old gold",
+        "file": "eval/scoring.py:828-835; process/check_subset_staleness.py:38-39; outputs/m7dm_new/score_avg.json",
+        "claim": "The match cache is reused whenever stored 'source' and 'votes' match (scoring.py:828-835) — gold content is not part of the cache key, so after any gold_writeback_*.py run, re-scoring an existing output dir reuses matches made against the pre-writeback gold: newly appended bug items can never be matched and are auto-FN (or, for removed/changed items, stale gold ids are scored against the wrong gold). The team knows ('必须清 score_match_ids.json 缓存，否则…无脑复用', tuning-log.md:330) but the only guard, check_subset_staleness.py, audits subset JSONLs exclusively — outputs/ caches are unguarded manual discipline. Compounding this, score_avg.json contains no dataset hash/gold-version field (keys: overall, overall_no_missing, avg_num_pred_item, by_category, by_class, counts), so the 'official' 0.4480 is not pinned to a gold snapshot: the gold has already mutated 6 times via tracked scripts plus untracked manual states, and nothing in the artifact proves which gold produced it. Frozen protection is name-based only (_gwb5_*, _p4q1) and does not cover the m7dm/m7ng baseline arms.",
+        "material": false,
+        "impact": "minor",
+        "impact_reasoning": "The claim's facts are all correct (verified: scoring.py:828-835 cache key = source+votes only, no gold fingerprint; score_avg.json carries no gold identity; check_subset_staleness.py guards only data/ subsets) — but it does NOT materially corrupt either official baseline. (1) Gold yardstick 0.4480: "
+      },
+      {
+        "dimension": "prompt-output-contract",
+        "severity": "high",
+        "kind": "methodology",
+        "title": "Gold-writeback circularity: baseline TPs scored against gold items appended from the same agent's own EX findings",
+        "file": "process/gold_writeback_dd3r_4.py:61-78",
+        "claim": "The 36-bug gold used for the official 0.7381/0.3301/0.4480 baseline was extended with bugs discovered by the agent under test's own Additional Findings (EX) channel, and the baseline then scores those same EX outputs as TPs against them. gold_writeback_dd3r_4.py:62 appends 0009 gold id 19 with the comment '# dd3r 0009 EX-02 (real, CS/high)'; in outputs/m7dm_new/WebTestBench_0009/score_match_ids.json the same agent's EX-02 matches gold '19' (pass=False) and counts as TP. All 7 matched EX items across m7dm_new map to gold pass=False items, several at the maximum gold id (writeback appends: 0070 id 20, 0074 id 24). tuning-log.md:475 records that 5 of 6 new FPs were verified real and written back — i.e. the process converts this agent's would-be FPs into gold TPs. Even if each bug is individually real, gold composition is selected by what THIS agent finds, inflating its P and R relative to any other agent and making the yardstick reward the incumbent's blind-spot profile.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "VERIFIED AND QUANTIFIED from real artifacts. Reproduction: recomputing outputs/m7dm_new from score_match_ids.json + result_extracted.md + _eval_mini.jsonl gold (replicating eval/scoring.py:1026-1052) reproduces the official macro P/R/F1 = 0.7381/0.3301/0.4480 exactly. Gold composition: mini-7 gold h"
+      },
+      {
+        "dimension": "prompt-output-contract",
+        "severity": "medium",
+        "kind": "gaming-vector",
+        "title": "EX-NN payoff is asymmetric: unmatched findings are free, so the prompt's 'precision discipline' does not match how EX items are actually scored",
+        "file": "eval/scoring.py:1021-1052",
+        "claim": "defect_detection.py:35 warns 'a wrong Additional Finding costs precision', but the confusion matrix in _compute_metrics iterates only over gold items (scoring.py:1028) and only collects matches where gold_id is not None (scoring.py:1022-1024) — a prediction matched to None never enters TP/FP/FN/TN. Since EX items are FAILs by construction, the real payoff is: matched-to-gold-bug = TP, matched-to-gold-ok = FP (capped at ONE per gold item no matter how many preds pile on, because fp increments once per gold), unmatched = zero cost. Speculative off-gold findings are free, and K=3 union voting amplifies matching: aggregate_ballots treats None as 'absence of a vote' (scoring.py:91), so a single ballot's match beats two abstentions, and matcher rules 3-4 (match_item.py:29-30, opposite-polarity + defect-anchor) actively pull EX failure-phrasings onto gold items. Gaming vector: emit many EX findings phrased near gold-bug topics — expected value is strictly positive, especially combined with the writeback pipeline that retroactively converts verified FPs into gold bugs.",
+        "material": true,
+        "impact": "corrupts-baseline",
+        "impact_reasoning": "Mechanics verified in code: scoring.py:1022-1024 drops None-matched preds before the gold-only confusion loop (1028-1052), fp increments at most once per gold-ok item, and aggregate_ballots (scoring.py:90-92) treats None as abstention so a single ballot's match wins under K=3 — so unmatched EX findi"
+      },
+      {
+        "dimension": "prompt-output-contract",
+        "severity": "medium",
+        "kind": "bug",
+        "title": "Bold-paragraph result dialect parses to 0 items and zeroes the record; official baselines were then produced by manual retry-until-parse (selection bias)",
+        "file": "eval/canonicalize.py:12-25",
+        "claim": "The prompt-permitted-in-practice dialect '**FT-01 — title**' on one line followed by 'PASS. prose...' on the next is invisible to every parser layer: _INLINE_RE requires '**ID: PASS**' on one line, _HEADER_RE requires a '#' heading, _CHECKBOX_LOOSE_RE requires '- [', and _DEDICATED_STATUS_RE requires a status-ONLY line ('PASS.' followed by prose fails the fullmatch). The record is flagged parse_error and scored 0 in 'overall' while being excluded from 'overall_no_missing' (scoring.py:1121-1135) — even though the underlying test work was correct (the failed attempt found FT-03, CS-05, EX-01, EX-02). The team's response was to manually re-run until a compliant artifact appeared (tuning-log.md:477: 0009 took 3 attempts — max-turns x1, format drift x1), so both official yardsticks measure the best-of-N compliant attempt, not the agent's first-attempt distribution; any prompt change that shifts format-drift probability silently shifts the baseline. Additionally, _extract_test_result_section (base_agent.py:166-182) truncates at the first non-indented line after the LAST '- [' checkbox, so heading-form Additional Findings emitted after the final checkbox item would be dropped at agent time, BEFORE scoring's canonicalize ever sees them.",
+        "material": false,
+        "impact": "minor",
+        "impact_reasoning": "The claim's MECHANICS are real and I verified every piece: the bold-paragraph dialect in outputs/dd3r/WebTestBench_0009/_failed_attempt2/result_extracted.md (22 items, '**FT-01 — title**' + 'PASS. prose' next line) matches none of the four regex layers in eval/canonicalize.py:12-25 (_DEDICATED_STATU"
+      },
+      {
+        "dimension": "prompt-output-contract",
+        "severity": "low",
+        "kind": "bias",
+        "title": "Evidence requirement is demanded by the prompt but enforced nowhere in scoring; baseline ran without it and contains PASSes judged from source code only",
+        "file": "eval/prompt/defect_detection.py:22",
+        "claim": "The prompt makes evidence 'REQUIRED' ('Never mark PASS for a behavior you did not exercise', line 22) and the EVIDENCE_REQUIREMENT addendum declares 'A PASS is INVALID without an Evidence line' (lines 109-121), but: (1) the addendum is gated behind --require_evidence (claude_code.py:166-168, run_agent.py:58) which the official baseline script run_dd3r_mini7.sh never sets — m7dm_new records have 0-2 'Evidence:' lines, all on EX items, zero on checklist items; (2) even when enabled, evidence_lint only emits a log event (claude_code.py:191-203), never failing or flagging the record; (3) scoring deliberately excludes Evidence from matcher content (scoring.py:650 comment 'Action/Expected/Evidence stay out') and _compute_metrics reads only the checkbox state. A PASS asserted from code-reading or pure assumption scores identically to an exercised PASS, so the three new exercise-intensive rules (verbatim text-node audit, state-word cross-check, double activation at defect_detection.py:24-26) demand work the metric cannot verify happened — the contract is one-directional.",
+        "material": false,
+        "impact": "minor",
+        "impact_reasoning": "Claim's facts are all confirmed (baseline ran without --require_evidence; 131 PASS items vs 9 Evidence lines in outputs/m7dm_new, all 9 on EX FAIL items; lint is log-only; matcher excludes Evidence), but the material-impact attack fails on a structural invariance: eval/scoring.py:1031-1052 maps an e"
+      },
+      {
+        "dimension": "prompt-output-contract",
+        "severity": "medium",
+        "kind": "methodology",
+        "title": "Budget contract incoherent (prompt says 100 tool calls, harness enforces 150 turns) with documented rationing — items judged without exercise",
+        "file": "eval/prompt/defect_detection.py:15",
+        "claim": "The prompt imposes 'a limited budget of turn/tool-call (max 100 times total)' but nothing enforces it: the harness sets max_turns=150 (claude_code.py:60) and counts turns, not tool calls. Real runs exceed the stated budget (tuning-log.md:477: clean 0009 mutation rerun used 108 tool calls vs 84 in the degraded run) and under pressure the agent rations — the same log entry records that in the rate-limit-degraded 0009 m0 run 'CS-03 从未行使' (CS-03 was never exercised) yet the item was judged, producing a wrong miss verdict that flipped on a clean rerun. The 3 new rules (verbatim text-node audit, state-word cross-check, mandatory double activation of every toggle, defect_detection.py:24-26) multiply per-item tool calls under this soft cap, so which items get genuinely exercised becomes load-dependent and invisible to scoring (no Evidence enforcement, see separate finding). The two yardsticks therefore partially measure scheduling luck (rate limits, turn pressure) rather than detection skill.",
+        "material": true,
+        "impact": "material",
+        "impact_reasoning": "Claim facts all verify (prompt 'max 100' at eval/prompt/defect_detection.py:15 vs max_turns=150 at eval/agent/claude_code.py:60; dd3r 0009 meta 90 turns/86 tool calls/2 RateLimitEvents; archived tainted run shows CS-03 marked [X] PASS without exercise vs clean-rerun FAIL). But the two PUBLISHED numb"
+      }
+    ],
+    "refuted": [
+      {
+        "dimension": "methodology-circularity",
+        "title": "Circular gold enrichment: dd3r prompt's own FPs were written into gold, then the same predictions were re-baselined against that gold — the claimed +0.043 prompt gain flips sign on gold without those items",
+        "why": "The claim's arithmetic reproduces exactly but its conclusion is refuted by a symmetry check it omitted. VERIFIED: (1) gold_writeback_dd3r_4.py:6-8 confirms the 4 gold items (0009#19, 0037#18/#19, 0074"
+      },
+      {
+        "dimension": "prompt-output-contract",
+        "title": "Turn-budget overrun writes a 0-byte result_extracted.md that deadlocks resume and silently shunts the record out of the no_missing headline",
+        "why": "REFUTED. The claim reads claude_code.py:178-180 correctly in isolation but the branch is unreachable, and every downstream link of the chain is contradicted by the actual runtime artifacts.\n\n1. The em"
+      }
+    ],
+    "critic_missed_angles": [
+      {
+        "title": "Physical layer unaudited: dev-server orphans + identity-blind readiness check can score detections run against the WRONG app version",
+        "file": "eval/agent/base_agent.py:218-277 (also scripts/mutation_probe.py:63-72, eval/agent/claude_code.py:95-98)",
+        "claim": "No review dimension covered the deploy/process-isolation layer beneath both yardsticks. Cleanup after every normal run is only `lsof -ti:PORT | xargs kill -9` (base_agent.py:222-226, invoked from the run() finally via kill_local_server, claude_code.py:98 -> base_agent.py:272-277). The repo ITSELF documents this kill as insufficient: mutation_probe.py:66-72 states vite/npm children under the setsid group 'may hold the port under a different PID, or the port may be momentarily unbound (still starting) so lsof returns nothing while the process survives and re-binds, leaking orphans across the batch'. The killpg fix (_force_reap_server, mutation_probe.py:79-87) exists ONLY in the mutation timeout/error path — never in the normal-completion path of run_agent/mini-7 runs nor in successful mutant runs. Meanwhile deploy readiness is identity-blind: server_deploy kills via the same racy lsof (base_agent.py:213), starts `npm run dev -- --port N` WITHOUT --strictPort (base_agent.py:249, vite silently bumps to N+1 when N is held), then accepts the server as ready if `curl -s <url>` merely returns 0 — any HTTP responder on the port passes, with no check that it is the just-launched process or the right app content (base_agent.py:256-268). Consequence: a leaked orphan from a previous batch that still holds the port serves the OLD app/mutant while the fresh vite binds elsewhere, and the agent 'tests' the stale application with zero error surfaced. This is most acute for the mutation yardstick: ports are recomputed identically per (app,k) from base_port 7000 across batches (mutation_probe.py:293-302), so the official --out-root same-injection re-measure (part of the hand-spliced 19/25) can run detection k's NEW injected app while curl green-lights an orphan serving the PREVIOUS injection — a server-level analogue of the already-confirmed stale-result.md finding, but it corrupts the detection itself, not just the judge input. HIGHEST-VALUE NEXT AUDIT: for every record/mutant in outputs/m7dm_new and outputs/_mutation_probe_dd3r, cross-check dev_server.log for vite's 'Port N is in use, trying another one' line and verify the PID that served the run matches dev_server_process; it is cheap, mechanical, and decides whether either official baseline ever scored a wrong-app detection.",
+        "evidence": "base_agent.py:224 `f\"lsof -ti:{port} | xargs kill -9\"`; :249 `[\"npm\", \"run\", \"dev\", \"--\", \"--port\", str(port)]` (no --strictPort); :259-266 readiness = `curl -s self.server_url` with only `response.returncode == 0`; :270 raises only if NOTHING responds. claude_code.py:95-98 finally -> kill_local_server (lsof-only). mutation_probe.py:66-72 in-repo admission: 'leaking orphans across the batch'; killpg remedy at :82 reachable only from timeout/error branches (:179, and not on success). mutation_probe.py:294-302: `tasks, port = [], args.base_port ... port += 1` — same (app,k)->port mapping every batch, so re-measure reuses the exact ports a prior leaked orphan may still hold.",
+        "severity": "high",
+        "kind": "bug"
+      },
+      {
+        "title": "Official gold is not reconstructible: writeback scripts are order-sensitive in gold-id space (docstring claims otherwise) and 4 records are appended by two different scripts",
+        "file": "process/gold_writeback_dd3r_4.py:31-32,42,99-110 (also process/gold_writeback_q3_7.py, gold_writeback_5apps.py, gold_writeback_q3_edit2.py)",
+        "claim": "The review's 'frozen-yardstick discipline gap' covered missing gold fingerprints in caches/baselines, but missed that the ONLY tracked path to rebuild the official gold — data/ is gitignored and the upstream HF dataset contains none of the 6 writebacks — is itself non-deterministic. Each script assigns new gold ids as max(existing)+1 at run time (dd3r_4.py:99, timedrift_3.py:84) with content-keyed idempotency only, and four records are appended to by TWO different scripts (verified by grep: 0009 and 0037 by 5apps+dd3r_4; 0070 by q3_7+q3_edit2; 0074 by q3_7+dd3r_4). So the final id numbering depends on undocumented execution order: in the live dataset 0074's dd3r item ('empty-state CTA') is id 24, i.e. q3_7 ran first chronologically, whereas a fresh clone running the scripts in the natural alphabetical order (dd3r_4 before q3_7) would assign it id 19 and shift q3_7's five items to 20-24. dd3r_4.py:31-32 explicitly asserts 'Run order vs the other gold_writeback_*.py scripts does not matter (content-keyed idempotency)' — true for content, provably FALSE for ids. Everything downstream keys on numeric gold ids: score_match_ids.json stores (pred_id, gold_id) string pairs, per-record score.json match_ids, coverage attribution (scoring.py:312-330), per-class buckets, and all provenance notes in tuning-log/memory ('gold #13', 'id19/id20'). A rebuilt gold with permuted ids silently repoints every cached/recorded match at a different item — no error, no checksum, no master script or recorded run order accompanies the 0.4480 baseline. (Related unrecorded drift: the task brief calls it a '36-bug gold' while the live mini-7 gold contains 62 pass=False items — 10/9/7/9/11/8/8 — exactly matching the baseline's recall denominators; nobody can even state the gold's size authoritatively, which is the same provenance hole.)",
+        "evidence": "dd3r_4.py:31-32: 'Run order vs the other gold_writeback_*.py scripts does not matter (content-keyed idempotency)'; :99 `next_id = max(int(i[\"id\"]) for i in checklist) + 1`. grep -l per index: WebTestBench_0074 -> {gold_writeback_q3_7.py, gold_writeback_dd3r_4.py}; 0070 -> {q3_7, q3_edit2}; 0009/0037 -> {5apps, dd3r_4}. Live dataset 0074 checklist tail: ids 19-23 = q3_7 items, id 24 = dd3r_4's 'When a search or filter yields zero matches...' (read via python over data/WebTestBench/WebTestBench.jsonl). outputs/m7dm_new/WebTestBench_0074/score_match_ids.json stores matches as [[\"FT-01\",\"1\"],...] — bare numeric gold ids with no gold hash/version.",
+        "severity": "high",
+        "kind": "methodology"
+      },
+      {
+        "title": "Headline P/R/F1 is an unweighted per-record macro-average: bug-mass weighting is arbitrary and gameable, and the reported triple is internally inconsistent (F1 cannot be derived from reported P,R)",
+        "file": "eval/scoring.py:252-255,338-343,390-401 (per-record inputs: outputs/m7dm_new/*/score.json)",
+        "claim": "No confirmed finding addressed the aggregation scheme of the gold yardstick. _update_aggregators sums each record's precision/recall/f1 ratios (scoring.py:253-255) and _compute_average_metrics divides by record count (scoring.py:398-399), so the official 0.7381/0.3301/0.4480 is the plain mean of 7 per-record ratios — verified: mean of the per-record F1s (0.308, 0.800, 0.600, 0.462, 0.267, 0.500, 0.200) = 0.4481. Three consequences the review missed: (1) Equal record weight despite gold-bug masses of 10/9/7/9/11/8/8 — pooling the same runs gives micro P=20/26=0.769, R=20/62=0.323, F1=0.455, a different headline from the same data; which weighting is 'official' is recorded nowhere. This is a gaming vector: one extra TP on a sparse record (0089: TP 1->2 lifts its F1 0.200->~0.32, headline +~0.017) is worth far more than the same TP on dense 0074, so variants get credit for redistributing effort rather than finding more bugs — and gold writebacks retroactively re-weight records (0074 gained items from two scripts), changing what a frozen run scores without any agent change. (2) The reported triple is not self-consistent: 2*0.7381*0.3301/(0.7381+0.3301)=0.4562 != 0.4480, because mean-of-F1s != F1-of-means; any consumer recomputing F1 from the published P,R gets a different baseline. (3) by_category divides by per-category record counts (scoring.py:277-286, 403+) that are 1-2 records on the mini set, publishing pure single-sample noise as category metrics; and no variance/CI is ever computed for the gold yardstick (the review's significance critique covered only the mutation yardstick's McNemar). With n=7, the documented matcher-drift noise, and a ±0.02-0.05 single-TP swing, the 0.4480 baseline has an unquantified error bar comparable to the effect sizes being chased.",
+        "evidence": "scoring.py:253 `self._accumulate_metrics(aggregators['total_metrics'], metrics)` (adds per-record precision/recall/f1 ratios, not counts); :398-399 `{k: round(v / count, 4) ...}`. Per-record score.json (outputs/m7dm_new): F1s 0.308/0.800/0.600/0.462/0.267/0.500/0.200, mean 0.4481 = reported 0.4480; recalls 0.200,0.667,0.429,0.333,0.1818,0.375,0.125 against live gold bug counts 10,9,7,9,11,8,8 imply TP=20, FP=6 -> micro F1 0.455 vs macro 0.448; 2PR/(P+R) on reported means = 0.4562 != 0.4480. by_category accumulation at scoring.py:277-286 divides by category_counts with no minimum-n guard.",
+        "severity": "medium",
+        "kind": "methodology"
+      }
+    ]
+  }
+}
