@@ -30,6 +30,22 @@ OUT_DIR = ROOT / "outputs/_mutation_probe"
 QUOTA = ["constraint", "interaction", "functionality", "content"]
 CLASS_SHORT = {"constraint": "CS", "interaction": "IX", "functionality": "FT", "content": "CT"}
 
+# Rate-limit circuit breaker (dd3r incident 2026-06-11: CLI-quota 429s starved 22
+# mutants in a row; each was mislabeled 'invalid' and burned a deploy for nothing).
+# After THRESHOLD starved mutants the remaining tasks are skipped without writing
+# result.json, so an idempotent re-run resumes exactly where the quota died.
+_RATE_LIMIT = {"hits": 0, "aborted": False, "threshold": 3}
+
+
+def _note_rate_limited(app_id: str, k: int) -> None:
+    _RATE_LIMIT["hits"] += 1
+    print(f"[{app_id} m{k}] RATE-LIMITED (429, no result) — not writing result.json; "
+          f"re-run resumes here ({_RATE_LIMIT['hits']}/{_RATE_LIMIT['threshold']} strikes)")
+    if _RATE_LIMIT["hits"] >= _RATE_LIMIT["threshold"] and not _RATE_LIMIT["aborted"]:
+        _RATE_LIMIT["aborted"] = True
+        print("!!! RATE-LIMIT CIRCUIT BREAKER TRIPPED — skipping all remaining mutants; "
+              "wait for the quota window to reset, then re-run to resume.")
+
 
 def load_records(app_ids: list[str]) -> dict[str, dict]:
     recs = {}
@@ -81,6 +97,9 @@ async def run_one_mutant(app_id: str, k: int, record: dict, args, api_config: AP
     contended resource (concurrent dev servers + npm). Ports are pre-assigned per
     (app,k) so the semaphore never causes a port collision."""
     async with sem:
+        if _RATE_LIMIT["aborted"]:
+            print(f"[{app_id} m{k}] SKIPPED — rate-limit circuit breaker tripped")
+            return None
         fault_long = QUOTA[k % len(QUOTA)]
         fault_class = CLASS_SHORT[fault_long]
         mdir = OUT_DIR / app_id / f"m{k}"
@@ -180,6 +199,15 @@ async def run_one_mutant(app_id: str, k: int, record: dict, args, api_config: AP
             if agent is not None and agent.result_extracted_path.exists():
                 result_md = agent.result_extracted_path.read_text(encoding="utf-8")
 
+            # Rate-limit starvation is NOT a property of the mutant: don't let it
+            # masquerade as 'invalid' (denominator shrink) — skip without writing
+            # result.json so an idempotent re-run picks this mutant up again.
+            if not result_md:
+                log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+                if ml.is_rate_limited(log_text):
+                    _note_rate_limited(app_id, k)
+                    return None
+
             # 4) validity: deployable? reachable? (lightweight: patched a real src file)
             reachable = (src_app / rel).exists() and rel.startswith("src")
             validity = ml.classify_validity(deploy_ok=deploy_ok and bool(result_md), reachable=reachable)
@@ -214,6 +242,11 @@ async def main() -> None:
     ap.add_argument("--apps", required=True, help="comma-separated app ids (WebTestBench_NNNN)")
     ap.add_argument("--mutants-per-app", type=int, default=2)
     ap.add_argument("--regen-mutants", action="store_true", help="force regenerate cached mutants")
+    ap.add_argument("--out-root", default=None,
+                    help="override the probe output root (default outputs/_mutation_probe). "
+                         "Pre-seed it with each mutant's injected.json/patch_meta.json/new_file.txt "
+                         "to re-measure the SAME injections with fresh detection (e.g. a new "
+                         "detection prompt) without touching the baseline's run/ artifacts.")
     ap.add_argument("--model", default="sonnet", help="model for generation + judge")
     ap.add_argument("--api_base_url", required=True)
     ap.add_argument("--api_key", required=True)
@@ -238,6 +271,11 @@ async def main() -> None:
                     help="seconds bounding the async detection (agent.run()); on timeout "
                          "the mutant is marked invalid and excluded from the denominator")
     args = ap.parse_args()
+
+    global OUT_DIR
+    if args.out_root:
+        p = Path(args.out_root)
+        OUT_DIR = p if p.is_absolute() else ROOT / p
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     app_ids = [a.strip() for a in args.apps.split(",") if a.strip()]

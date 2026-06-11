@@ -343,3 +343,17 @@ def test_parse_catch_unfenced_verdict_with_leading_prose():
     v = ml.parse_catch(md)
     assert v["caught"] is True
     assert v["matched_item"] == "FT-01"
+
+
+def test_is_rate_limited_detects_429_status():
+    # Shape taken from a real claude_agent_sdk event log line (dd3r incident
+    # 2026-06-11: 22 mutants starved by CLI-quota 429s were mislabeled invalid).
+    log = '"errors": null,\n      "api_error_status": 429,\n      "uuid": "e5e7"'
+    assert ml.is_rate_limited(log) is True
+
+
+def test_is_rate_limited_ignores_clean_and_empty_logs():
+    assert ml.is_rate_limited('"api_error_status": null') is False
+    assert ml.is_rate_limited("plain text mentioning 429 elsewhere") is False
+    assert ml.is_rate_limited("") is False
+    assert ml.is_rate_limited(None) is False
