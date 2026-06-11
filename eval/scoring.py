@@ -642,15 +642,36 @@ class ScoringPipeline:
         lines = text.splitlines()
         pred_items: Dict[str, dict] = {}
 
-        # 1) Canonical checkbox format.
+        # 1) Canonical checkbox format. For FAILED items, fold the Bug Report's
+        # Issue/Actual lines into content as a compact `| defect …` summary so the
+        # matcher can anchor on the OBSERVED DEFECT instead of the item's surface
+        # wording (dd3r specimens: 0009 CS-05 double-booking matched the ok
+        # 'date availability' gold instead of the 'one booking at a time' gold bug;
+        # 0037 FT-02 likewise). Action/Expected/Evidence stay out — only the defect.
         cb = re.compile(r"^- \[\s*([xX ])\s*\]\s*(?:\*\*)?([A-Za-z0-9_-]+)(?:\*\*)?:\s*(.+)$")
+        sub = re.compile(r"^-\s*(Issue|Actual)\s*:\s*(.+)$")
+        cur: Optional[str] = None
+        seen_defect_keys: Dict[str, set] = {}
         for line in lines:
-            m = cb.match(line.strip())
+            stripped = line.strip()
+            m = cb.match(stripped)
             if m:
-                pred_items[m.group(2).strip()] = {
+                cur = m.group(2).strip()
+                pred_items[cur] = {
                     "content": m.group(3).strip(),
                     "pass": m.group(1).lower() == "x",
                 }
+                seen_defect_keys[cur] = set()
+                continue
+            if cur and cur in pred_items and not pred_items[cur]["pass"]:
+                sm = sub.match(stripped)
+                if sm:
+                    key = sm.group(1).lower()
+                    if key in seen_defect_keys[cur]:
+                        continue  # first Issue/Actual per item only
+                    seen_defect_keys[cur].add(key)
+                    frag = " ".join(sm.group(2).split())[:200]
+                    pred_items[cur]["content"] += f" | defect {key}: {frag}"
         if pred_items:
             return pred_items
 
