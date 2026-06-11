@@ -104,6 +104,17 @@ async def run_one_mutant(app_id: str, k: int, record: dict, args, api_config: AP
         fault_class = CLASS_SHORT[fault_long]
         mdir = OUT_DIR / app_id / f"m{k}"
         mdir.mkdir(parents=True, exist_ok=True)
+
+        # P0-4: a completed mutant's verdict is reused VERBATIM on resume —
+        # re-rolling the judge lets verdicts drift between runs and could judge a
+        # NEW injection against a STALE result.md. --rejudge forces reprocessing
+        # (mutation_revalidate.py remains the official re-judge tool).
+        if not args.regen_mutants and not getattr(args, "rejudge", False):
+            cached = ml.cached_result_ok(mdir)
+            if cached is not None:
+                print(f"[{app_id} m{k}] cached verdict reused "
+                      f"(validity={cached.get('validity')} caught={cached.get('caught')})")
+                return cached
         app_copy = mdir / "app"
         src_app = APPS_DIR / app_id
         instruction = record.get("instruction", "")
@@ -123,6 +134,21 @@ async def run_one_mutant(app_id: str, k: int, record: dict, args, api_config: AP
                 rel = json.loads((mdir / "patch_meta.json").read_text())["file"]
                 content = (mdir / "new_file.txt").read_text()
 
+            # 1a') duplicate-injection check (P0-3): a generated mutant byte-identical
+            # to an earlier k of the same app must not double-count in numerator and
+            # denominator under two fault classes (the dd3r 0009 m0/m1 scar — the same
+            # single-character edit scored as both CS and IX).
+            dup = ml.find_duplicate_mutant(OUT_DIR / app_id, k)
+            if dup is not None:
+                out = {**base, "validity": "invalid", "caught": False, "votes": [],
+                       "repro_steps": rec.get("repro_steps", ""),
+                       "reason": f"precheck:duplicate_of_m{dup}",
+                       "injection_sha": ml.injection_sha(mdir)}
+                (mdir / "result.json").write_text(json.dumps(out, ensure_ascii=False, indent=2))
+                print(f"[{app_id} m{k}] {fault_class} validity=invalid caught=False "
+                      f"(PRECHECK duplicate_of_m{dup})")
+                return out
+
             # 1b) static pre-checks against the PRISTINE app (reachability +
             # manifestation; see ml.precheck_mutant). An unmanifestable mutant must
             # not burn a ~22-min detection run nor sit in the denominator as a fake
@@ -131,7 +157,8 @@ async def run_one_mutant(app_id: str, k: int, record: dict, args, api_config: AP
             if pre_validity == "invalid":
                 out = {**base, "validity": "invalid", "caught": False, "votes": [],
                        "repro_steps": rec.get("repro_steps", ""),
-                       "reason": f"precheck:{pre_reason}"}
+                       "reason": f"precheck:{pre_reason}",
+                       "injection_sha": ml.injection_sha(mdir)}
                 (mdir / "result.json").write_text(json.dumps(out, ensure_ascii=False, indent=2))
                 print(f"[{app_id} m{k}] {fault_class} validity=invalid caught=False "
                       f"(PRECHECK {pre_reason})")
@@ -190,7 +217,8 @@ async def run_one_mutant(app_id: str, k: int, record: dict, args, api_config: AP
             if timed_out:
                 out = {**base, "validity": "invalid", "caught": False, "votes": [],
                        "repro_steps": rec.get("repro_steps", ""), "timeout": True,
-                       "reason": "detection_timeout"}
+                       "reason": "detection_timeout",
+                       "injection_sha": ml.injection_sha(mdir)}
                 (mdir / "result.json").write_text(json.dumps(out, ensure_ascii=False, indent=2))
                 print(f"[{app_id} m{k}] {fault_class} validity=invalid caught=False (TIMEOUT)")
                 return out
@@ -226,7 +254,10 @@ async def run_one_mutant(app_id: str, k: int, record: dict, args, api_config: AP
                     verdict = await ml.judge_catch(rec, result_md, args.model)
 
             out = {**base, "validity": validity, "caught": verdict["caught"],
-                   "votes": verdict["votes"], "repro_steps": rec.get("repro_steps", "")}
+                   "votes": verdict["votes"],
+                   "discarded_unparseable": verdict.get("discarded_unparseable", 0),
+                   "repro_steps": rec.get("repro_steps", ""),
+                   "injection_sha": ml.injection_sha(mdir)}
             (mdir / "result.json").write_text(json.dumps(out, ensure_ascii=False, indent=2))
             print(f"[{app_id} m{k}] {fault_class} validity={validity} caught={verdict['caught']}")
             return out
@@ -242,6 +273,10 @@ async def main() -> None:
     ap.add_argument("--apps", required=True, help="comma-separated app ids (WebTestBench_NNNN)")
     ap.add_argument("--mutants-per-app", type=int, default=2)
     ap.add_argument("--regen-mutants", action="store_true", help="force regenerate cached mutants")
+    ap.add_argument("--rejudge", action="store_true",
+                    help="force reprocessing of mutants whose result.json already exists "
+                         "(default: a completed verdict is reused verbatim on resume — P0-4; "
+                         "prefer mutation_revalidate.py for systematic re-judging)")
     ap.add_argument("--out-root", default=None,
                     help="override the probe output root (default outputs/_mutation_probe). "
                          "Pre-seed it with each mutant's injected.json/patch_meta.json/new_file.txt "

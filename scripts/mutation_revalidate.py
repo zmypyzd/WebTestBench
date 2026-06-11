@@ -60,6 +60,16 @@ async def revalidate_one(app_id: str, k: int, judge_cfg, rejudge: bool,
     if (mdir / "result.json").exists() and not bak.exists():
         bak.write_text((mdir / "result.json").read_text())
 
+    # 0) duplicate-injection check (P0-3): byte-identical injections must not
+    # double-count in numerator and denominator (the dd3r 0009 m0/m1 scar).
+    dup = ml.find_duplicate_mutant(OUT_DIR / app_id, k)
+    if dup is not None:
+        out = {**base, "validity": "invalid", "caught": False, "votes": [],
+               "reason": f"precheck:duplicate_of_m{dup}"}
+        (mdir / "result.json").write_text(json.dumps(out, ensure_ascii=False, indent=2))
+        print(f"[{app_id} m{k}] {fault_class} validity=invalid (PRECHECK duplicate_of_m{dup})")
+        return out
+
     # 1) static pre-checks against the pristine app
     validity, reason = ml.precheck_mutant(APPS_DIR / app_id, rel, content)
     if validity == "invalid":
@@ -114,7 +124,15 @@ async def main() -> None:
     ap.add_argument("--concurrency", type=int, default=4, help="concurrent judge calls")
     ap.add_argument("--no-rejudge", action="store_true",
                     help="apply pre-checks only; keep existing judge verdicts")
+    ap.add_argument("--out-root", default=None,
+                    help="override the probe root to revalidate (default outputs/_mutation_probe; "
+                         "e.g. outputs/_mutation_probe_dd3r)")
     args = ap.parse_args()
+
+    global OUT_DIR
+    if args.out_root:
+        p = Path(args.out_root)
+        OUT_DIR = p if p.is_absolute() else ROOT / p
 
     judge_cfg = {"base_url": args.judge_api_base_url, "api_key": args.judge_api_key,
                  "model": args.judge_model}
