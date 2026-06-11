@@ -447,3 +447,21 @@ ultracode 双线工作流（87 agents；尾部 3 个收尾 agent 撞 session lim
 | 旧 7-app 数字（votes=1/旧 gold/旧 prompt，作废） | 0.3214 | 0.1862 | 0.2289 | — |
 
 by_class：FT 0.449 > CS 0.3429 > CT 0.1667 > **IX 0.0**（与突变尺梯度一致：交互/内容类是检测盲区）。per-record 两极：0035 F1 0.8235 最好；0070 R=1/9、0074 R=1/10 ——Q3 白盒回写的 9 条 bug 对 p1exp 多为 FN，**这是 gold 补全后的诚实盲区度量，不是退步**。注意新旧数字之差全部来自测量系统（同一批预测）；后续检测优化以 0.3817 为对照起点。配套 gold-independent 尺：7-app 突变 catch_rate 存档 0.429 / 修正口径 0.520（harness 预检落地后正式重基线）。
+
+## mutation harness 预检 + 判官规则落地，基线重立 15/25 = 0.600 (2026-06-11)
+
+branch `tune/mutation-precheck-judge`（merge `9aaedb6`），TDD 14 新测试，全套 131 绿。
+
+**落地内容**：(1) `ml.precheck_mutant` 静态预检——reachability（从 src 入口 BFS import 图，拒死代码文件）+ manifestation（仅改字符串字面量且变更 token 全为 a11y 不可见 utility class 则拒）；接入 `run_one_mutant` 部署前，无效 mutant 不再烧 ~22min 检测。对 8 个已诊断 mutant 实战校验 8/8 与白盒诊断一致。(2) 判官 prompt 规则 2——被变异面的**部分/单向症状**计 caught（需是注入变更的直接后果）。(3) `scripts/mutation_revalidate.py`——从既有工件重derive基线（预检 + 3 票 MiniMax 重判），不重跑检测，指标可比。
+
+**重立基线（`summary_7app_4class_v2.json`，旧 v1 存档不动）**：
+
+| | v1 (0.429) | **v2 官方** |
+|---|---|---|
+| overall | 12/28 = 0.429 | **15/25 = 0.600** |
+| FT | 0.571 | **0.833** (5/6) |
+| CS | 0.286 | **0.667** (4/6) |
+| IX | 0.429 | 0.500 (3/6) |
+| CT | 0.429 | 0.429 (3/7) — 最弱类 |
+
+validity 28→25（0070 m0/m1 css-only、m2 unreachable）；判官翻转 3 个且全部通过对抗审查：0074 m0（报告引用了被变异谓词，原判官假阴性）、0035 m0（`&&`↔`||` 单谓词翻转的另一方向，memory 在案的 near-miss）、0037 m2（EX-01 证据原文即注入症状 '36mo'，黑盒报症状不担根因归因义务，2-1 通过）。其余 22 个判决与 v1 完全复现，判官稳定。0.600 > 先前 0.520 预测：预测只含 validity+假阴性两项，partial-match 规则额外治好两个已记录 near-miss。CT 仍是真盲区，与 mini-7 gold 基线的 by_class（CT 0.167 / IX 0.0）互证——检测提示词三规则（逐字读文本节点/状态词对照/同控件二次激活）是下一杠杆。
