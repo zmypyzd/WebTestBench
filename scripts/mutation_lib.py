@@ -198,6 +198,19 @@ def _first_json_object(s: str) -> str | None:
     return None  # unbalanced — no complete object
 
 
+def is_rate_limited(event_log_text: str | None) -> bool:
+    """True when a detection event log shows the provider rate-limiting (HTTP 429).
+
+    A rate-limited run produces no result through no fault of the mutant, so
+    callers must NOT classify it as a normal 'invalid' — that silently shrinks
+    the catch-rate denominator (the 2026-06-11 dd3r incident burned 22 mutants
+    this way). Matches the claude_agent_sdk event shape `"api_error_status": 429`.
+    """
+    if not event_log_text:
+        return False
+    return re.search(r'"api_error_status"\s*:\s*429\b', event_log_text) is not None
+
+
 def parse_catch(md: str) -> dict:
     """Parse a judge verdict. Defaults to caught=false on any parse failure
     (conservative: an unparseable verdict must not count as a catch).
