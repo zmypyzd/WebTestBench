@@ -104,6 +104,20 @@ async def run_one_mutant(app_id: str, k: int, record: dict, args, api_config: AP
                 rel = json.loads((mdir / "patch_meta.json").read_text())["file"]
                 content = (mdir / "new_file.txt").read_text()
 
+            # 1b) static pre-checks against the PRISTINE app (reachability +
+            # manifestation; see ml.precheck_mutant). An unmanifestable mutant must
+            # not burn a ~22-min detection run nor sit in the denominator as a fake
+            # 'valid' miss (the 0070 m0/m1/m2 scar from the 4-class run).
+            pre_validity, pre_reason = ml.precheck_mutant(src_app, rel, content)
+            if pre_validity == "invalid":
+                out = {**base, "validity": "invalid", "caught": False, "votes": [],
+                       "repro_steps": rec.get("repro_steps", ""),
+                       "reason": f"precheck:{pre_reason}"}
+                (mdir / "result.json").write_text(json.dumps(out, ensure_ascii=False, indent=2))
+                print(f"[{app_id} m{k}] {fault_class} validity=invalid caught=False "
+                      f"(PRECHECK {pre_reason})")
+                return out
+
             # 2) copy sources + apply patch
             ml.copy_app_sources(src_app, app_copy)
             target = app_copy / rel

@@ -15,9 +15,11 @@ $result
 ```
 
 Rules:
-1. CAUGHT means a FAIL item in the result describes the SAME malfunction as the injected bug — same feature, same wrong behavior. An item failing for an UNRELATED reason does NOT count.
-2. An off-checklist finding (e.g. an item id like `EX-01`) counts exactly like any other FAIL item.
-3. Match on intent, not wording. If unsure, answer caught=false.
+1. CAUGHT means a FAIL item describes the injected bug: same feature/surface, and the reported wrong behavior is an effect of the injected change.
+2. PARTIAL or ONE-SIDED descriptions COUNT: the report does not need to describe the bug's full mechanism or both directions of a flipped behavior. A FAIL item on the mutated surface whose symptom is a direct consequence of the injected change is caught=true — e.g. it quotes the mutated condition/predicate, or reports only one of the two directions a toggle was flipped to.
+3. An item failing for an UNRELATED reason (different surface, or a symptom the injected change cannot cause) does NOT count.
+4. An off-checklist finding (e.g. an item id like `EX-01`) counts exactly like any other FAIL item.
+5. Match on intent, not wording. Only when the connection to the injected change is genuinely doubtful answer caught=false.
 
 Output EXACTLY one JSON object and nothing else:
 ```json

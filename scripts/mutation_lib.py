@@ -245,6 +245,128 @@ def parse_catch(md: str) -> dict:
         return {"caught": False, "matched_item": None, "reason": "json error"}
 
 
+# ---------- mutant pre-checks (reachability + manifestation) ----------
+# White-box diagnosis of the 4-class run (2026-06-10, see tuning-log) found the
+# validity judge passing mutants that cannot manifest: a dead-code file (0070 m2,
+# NavLink.tsx with zero importers) and CSS-only edits neutralized at every call
+# site / invisible to a11y snapshots (0070 m0/m1, `disabled:pointer-events-none`).
+# These static checks reject such mutants BEFORE the ~22-min detection run.
+
+_IMPORT_RE = re.compile(
+    r"""(?:\bimport\s+[^'"]*?\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+|\bexport\s+[^'"]*?\bfrom\s*)['"]([^'"]+)['"]""",
+)
+_JS_EXTS = (".tsx", ".ts", ".jsx", ".js")
+# a11y-tree-affecting utility classes: removing/adding these changes what the
+# accessibility snapshot contains, so such a CSS-only mutant CAN manifest.
+_A11Y_OBSERVABLE_CLASSES = {"hidden", "sr-only", "invisible", "collapse", "not-sr-only"}
+_CSS_TOKEN_RE = re.compile(r"^!?[a-z0-9:_\-\[\]()./%#]+$")
+
+
+def _resolve_import(app_dir: Path, importer: Path, spec: str) -> Path | None:
+    """Resolve an import specifier to a source file inside the app, or None.
+
+    Handles './x'/'../x' (relative to the importer) and the '@/x' -> src/x vite
+    alias used across the app corpus. Package imports return None. Tries the bare
+    path, every JS extension, and directory index files."""
+    if spec.startswith("@/"):
+        base = app_dir / "src" / spec[2:]
+    elif spec.startswith("."):
+        base = (importer.parent / spec).resolve()
+    else:
+        return None  # package import
+    candidates = [base] if base.suffix in _JS_EXTS else []
+    candidates += [base.with_name(base.name + ext) for ext in _JS_EXTS]
+    candidates += [base / f"index{ext}" for ext in _JS_EXTS]
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def is_reachable(app_dir: Path, rel_file: str) -> bool:
+    """BFS the import graph from the app's entry files; True iff `rel_file` is
+    reached. CONSERVATIVE: if no entry file is found, return True (cannot
+    analyze -> never invalidate). The entry files themselves are reachable."""
+    app_dir = Path(app_dir)
+    entries = [p for name in ("main", "index", "App")
+               for ext in _JS_EXTS
+               if (p := app_dir / "src" / f"{name}{ext}").is_file()]
+    if not entries:
+        return True
+    target = (app_dir / rel_file).resolve()
+    seen: set[Path] = set()
+    queue = [e.resolve() for e in entries]
+    while queue:
+        cur = queue.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        if cur == target:
+            return True
+        try:
+            body = cur.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for spec in _IMPORT_RE.findall(body):
+            nxt = _resolve_import(app_dir, cur, spec)
+            if nxt is not None and nxt.resolve() not in seen:
+                queue.append(nxt.resolve())
+    return target in seen
+
+
+_STR_LIT_RE = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"|`[^`]*`", re.DOTALL)
+
+
+def manifestation_verdict(old_content: str, new_content: str) -> str | None:
+    """Return an invalidity reason for a mutation that cannot manifest in an
+    accessibility snapshot, else None (no objection).
+
+    Flags ONLY the proven-no-op shape: the change is confined to string-literal
+    contents AND every changed token is a css-utility-shaped class that does NOT
+    affect the a11y tree (pointer-events/hover/opacity/...). Display-text edits
+    (capitalized words, spaces, punctuation) and any code change pass."""
+    stripped_old = _STR_LIT_RE.sub("''", old_content)
+    stripped_new = _STR_LIT_RE.sub("''", new_content)
+    if stripped_old != stripped_new:
+        return None  # code changed -> can manifest
+
+    def _tokens(s: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for lit in _STR_LIT_RE.findall(s):
+            for tok in lit[1:-1].split():
+                counts[tok] = counts.get(tok, 0) + 1
+        return counts
+
+    old_t, new_t = _tokens(old_content), _tokens(new_content)
+    changed = {t for t in set(old_t) | set(new_t) if old_t.get(t, 0) != new_t.get(t, 0)}
+    if not changed:
+        return None  # literals reordered/identical -> assume observable content change
+    for tok in changed:
+        # Utility classes are dashed/variant-prefixed/arbitrary-value shaped
+        # ('pointer-events-none', 'disabled:opacity-50', 'w-[12px]'). A bare
+        # lowercase word ('one', 'flex') is ambiguous -> treat as observable.
+        if not _CSS_TOKEN_RE.match(tok) or not re.search(r"[-:\[]", tok):
+            return None  # not clearly css-utility-shaped -> observable
+        if tok.split(":")[-1] in _A11Y_OBSERVABLE_CLASSES:
+            return None  # a11y-tree-affecting class -> observable
+    return "css_only_not_a11y_observable"
+
+
+def precheck_mutant(app_dir: Path, rel_file: str, new_content: str) -> tuple[str, str | None]:
+    """Static pre-checks against the PRISTINE app. Returns (validity, reason):
+    ('invalid', 'unreachable_file' | 'css_only_not_a11y_observable') or ('valid', None)."""
+    app_dir = Path(app_dir)
+    if not is_reachable(app_dir, rel_file):
+        return "invalid", "unreachable_file"
+    old_path = app_dir / rel_file
+    if old_path.is_file():
+        reason = manifestation_verdict(
+            old_path.read_text(encoding="utf-8", errors="ignore"), new_content)
+        if reason:
+            return "invalid", reason
+    return "valid", None
+
+
 def use_http_judge(judge_cfg) -> bool:
     """Route to the independent HTTP judge (D1) IFF a judge base_url is present.
 
