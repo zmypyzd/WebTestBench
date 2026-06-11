@@ -523,3 +523,24 @@ branch `tune/matcher-defect-anchor`（merge `90e5251`）。**问题**：`_parse_
 **P0 修复队列**（度量正确性）：判官废票重投；match 缓存加 gold 指纹（活雷：0002/0006 的 17 个 votes=1 旧缓存 + L1041 KeyError）；mutant 注入去重；resume 不重掷判官票。**P1**（可博弈）：全 FAIL 策略 F1 0.4619 > 0.4480（PASS 裁决对 P/R/F1 零贡献、未覆盖 ok=TN）；unmatched FAIL 隐形 + FP 按 gold 项坍缩 + 规则 3/4 导向不对称；K=3 实为 τ=1 并集非多数票（23.4% 最终匹配是 1/3 少数票），"投票去噪"叙事错误。**P2**（方法论）：回写需独立仲裁通道；姊妹条件项极性盲摆动；measurement 规则靶上调参；n=7/25 统计效力声明。**批评员补盲**：物理层（孤儿 dev-server/无身份就绪检查）、gold 不可重建（writeback id=max+1 顺序敏感，与 docstring 矛盾）、逐记录宏平均权重任意。
 
 **纪律自此**：0.4480/0.760 为带星号内部参考值；对外引用前先落 P0/P1；受控 A/B 差值仍可用于决策（对称性使然）。
+
+## P0 ×4 落地：判官废票重投/缓存 gold 指纹/注入去重/续跑判决复用，变异基线重立 19/24 = 0.792 (2026-06-11)
+
+branch `fix/eval-pipeline-p0`（commit `7314dfa`），对抗审计 P0 队列全修，TDD ×9 新测试 + 6 个编码旧语义的测试重写，147 全绿：
+
+- **P0-1 判官废票重投**：unparseable ballot（HTTP 死/200 带垃圾/截断）重投，仍废则**弃席不占多数席位**（`ml.ballots_with_reballot`，多数严格按有效席计）；parse_catch 三处失败路径打 `unparseable` 标。
+- **P0-2 match 缓存 gold 指纹**：`score_match_ids.json` 存 (gold+pred) sha256，复用需 source+votes+指纹三者齐合；**legacy 缓存一律不复用**（0002/0006 的 17 个活雷拆除）；stale pred id 不再 KeyError（按未覆盖语义处理）。
+- **P0-3 注入去重**：同 app 内字节级相同注入标 `precheck:duplicate_of_mJ` 出分母（probe + revalidate 双接线）。
+- **P0-4 续跑判决复用**：result.json 带 `injection_sha`，续跑原样复用（不重掷判官票）；`--rejudge` 强制；revalidate 加 `--out-root`。
+
+**重立（revalidate 同尺重判两臂）**：去重逮到**两对**重复注入（0009 m1=m0 已知、**0070 m1=m0 新发现**——生成器重复是系统性的）；0074 m3 如审计预言 FLIP→caught（废票假 miss）；老 prompt 的 0037 m2 反向 FLIP→miss（当初 catch 是判官噪声）。
+
+| | 旧 prompt (`summary_v2_p0.json`) | **新 prompt (`summary_dd3r_p0.json`，官方)** | Δ |
+|---|---|---|---|
+| overall | 14/24 = 0.583 | **19/24 = 0.792** | **+0.209** |
+| CT | 3/7 = 0.429 | **6/7 = 0.857** | +0.429 |
+| IX | 3/5 | 4/5 | +0.200 |
+| CS | 4/6 | 5/6 | +0.167 |
+| FT | 4/6 | 4/6 | 0（"回吐"系判官噪声，已消失）|
+
+**官方基线对更新：gold 尺 0.4480*（星号=审计在案的循环性充气，水位不可外引）+ 变异尺 0.792（P0-fixed 口径）**；0.760/0.600 作废。三规则的同尺判离对 +6/−1（McNemar p≈0.125，n 小告诫仍在但方向增强）。P1（度量语义可博弈）与 P2（方法论）仍挂账待议。
