@@ -12,7 +12,11 @@ real bugs; 4 are genuinely off-gold and are written back here:
   cards AND detail pages; the detail page complies). Appended as a conditional
   card-specific item per the 0070 append-not-flip precedent — flipping #13
   would punish agents that correctly observed detail-page compliance.
-* 0009 — /edit-listing has no role guard (traveler can edit any listing).
+* 0009 — /edit-listing has no role guard (traveler can edit any listing via
+  direct URL). NOT off-gold strictly: gold #12 states this requirement and is
+  pass=True because the NORMAL path complies (no edit button in traveler UI);
+  the appended item is the bypass-specific conditional half, same
+  append-not-flip structure as 0070 #7/#8 -> id19/id20.
 * 0074 — misleading empty-state CTA during an active zero-result search.
 
 NOT written back:
