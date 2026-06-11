@@ -1,5 +1,6 @@
 import argparse
 import ast
+import hashlib
 import json
 import re
 from collections import Counter, defaultdict
@@ -116,6 +117,41 @@ def aggregate_ballots(
         result.append((pred_id, gold))
 
     return result
+
+
+def match_cache_fingerprint(gold_items: Dict[str, dict], pred_items: Dict[str, dict]) -> str:
+    """Stable digest of BOTH sides of a match — the gold checklist (id, content,
+    pass) and the predicted items (id, content, pass). Stored in
+    score_match_ids.json and required for cache reuse (P0-2, 2026-06-11 pipeline
+    audit): the old cache key was only (source, votes), so a gold writeback
+    followed by an in-place rescore silently reused matches computed against the
+    OLD gold — newly appended gold-bug items could never be matched and were
+    forced FN, denying exactly the credit the writeback granted."""
+    payload = {
+        "gold": sorted(
+            (str(k), str(v.get("content", "")), bool(v.get("pass", True)))
+            for k, v in gold_items.items()
+        ),
+        "pred": sorted(
+            (str(k), str(v.get("content", "")), bool(v.get("pass", True)))
+            for k, v in pred_items.items()
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def cache_reusable(cached: dict, source: str, votes: int, fingerprint: str) -> bool:
+    """A cached match bundle is reusable only when source, votes AND the
+    gold+pred fingerprint all match. Legacy caches without a fingerprint are NOT
+    reused (conservative one-time rematch — the audit found 17 live stale caches
+    for 0002/0006 written before the timedrift gold writeback)."""
+    return (
+        cached.get("source", "result") == source
+        and cached.get("votes", 1) == votes
+        and cached.get("fingerprint") == fingerprint
+    )
 
 
 class ScoringPipeline:
@@ -820,16 +856,16 @@ class ScoringPipeline:
         # behavior instead of raising AttributeError (mirrors the canonicalize scar).
         votes = max(1, int(getattr(self, "match_votes", 1)))
 
-        # Reuse cached matches only when stored source AND stored votes match (D4).
-        # Legacy caches lacking 'votes' default to 1, so under K=1 they are reused
-        # with zero recompute; any K>1 correctly invalidates them (one-time rematch).
-        # If the cache is empty but current predictions are non-empty, force rematch
-        # so stale empty outputs do not permanently mask valid data.
+        # Reuse cached matches only when source, votes AND the gold+pred
+        # fingerprint all match (P0-2). Legacy caches without a fingerprint are
+        # never reused — a gold writeback or a re-run changing predictions must
+        # invalidate the cache, otherwise appended gold items are forced FN.
+        # If the cache is empty but current predictions are non-empty, force
+        # rematch so stale empty outputs do not permanently mask valid data.
+        fingerprint = match_cache_fingerprint(gold_items, pred_items)
         if match_result_file.exists():
             match_result = json.loads(match_result_file.read_text(encoding="utf-8"))
-            stored_source = match_result.get("source", "result")
-            stored_votes = match_result.get("votes", 1)
-            if stored_source == source and stored_votes == votes:
+            if cache_reusable(match_result, source, votes, fingerprint):
                 cached_matches = match_result.get("matches")
                 if cached_matches:
                     return cached_matches
@@ -853,6 +889,7 @@ class ScoringPipeline:
                 "detailed_matches": [],
                 "source": source,
                 "votes": votes,
+                "fingerprint": fingerprint,
                 "ballots": [],
             })
             return []
@@ -893,6 +930,7 @@ class ScoringPipeline:
             "detailed_matches": detailed_matches,
             "source": source,
             "votes": votes,
+            "fingerprint": fingerprint,
             "ballots": ballots,
         })
 
@@ -1038,7 +1076,18 @@ class ScoringPipeline:
             
             # Case 2: the gold item is covered; derive predicted pass/fail.
             # Any failing prediction marks the item as "bug found".
-            pred_pass = all(pred_items[pred_id]["pass"] for pred_id in pred_ids)
+            # Guard (P0-2): a stale cache may reference pred ids absent from the
+            # current predictions — drop them instead of KeyError-crashing; if
+            # NONE of the matched ids exist anymore, the gold item is effectively
+            # uncovered (Case 1 semantics), not silently pass/fail.
+            known_ids = [p for p in pred_ids if p in pred_items]
+            if not known_ids:
+                if gold_meta["pass"]:
+                    tn += 1
+                else:
+                    fn += 1
+                continue
+            pred_pass = all(pred_items[pred_id]["pass"] for pred_id in known_ids)
             
             if gold_meta["pass"]:  # Gold says no bug.
                 if pred_pass:  # Correct no-bug prediction.

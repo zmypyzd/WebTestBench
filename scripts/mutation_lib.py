@@ -5,6 +5,8 @@ Pure functions (unit-tested) decide whether the numbers are right. I/O helpers
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import os
 import re
@@ -28,6 +30,102 @@ def majority_caught(votes: list[bool]) -> bool:
     if not votes:
         return False
     return sum(1 for v in votes if v) > len(votes) / 2
+
+
+async def ballots_with_reballot(cast, votes: int = 3, max_reballots: int = 2) -> dict:
+    """Cast `votes` judge ballots via the zero-arg async `cast`, re-casting any
+    UNPARSEABLE ballot up to `max_reballots` extra times. A seat that stays
+    unparseable is DISCARDED — it must never occupy a majority slot as a fake
+    'no' vote (P0-1, 2026-06-11 pipeline audit: 4/75 dd3r ballots were
+    unparseable and decided 0074 m3 as a false miss). Majority is strict over
+    the VALID seats only; zero valid seats -> conservative caught=False.
+
+    First round is cast in parallel; the (rare) re-ballots run sequentially.
+    Returns {caught, votes:[valid parse_catch dicts], discarded_unparseable:int}.
+    """
+    first = await asyncio.gather(*(cast() for _ in range(votes)))
+    seats, discarded = [], 0
+    for raw in first:
+        verdict = parse_catch(raw)
+        attempts = 0
+        while verdict.get("unparseable") and attempts < max_reballots:
+            verdict = parse_catch(await cast())
+            attempts += 1
+        if verdict.get("unparseable"):
+            discarded += 1
+        else:
+            seats.append(verdict)
+    return {
+        "caught": majority_caught([s["caught"] for s in seats]),
+        "votes": seats,
+        "discarded_unparseable": discarded,
+    }
+
+
+def find_duplicate_mutant(app_out_dir: Path, k: int) -> int | None:
+    """Return the smallest j<k whose cached injection (target file + patched
+    content) is byte-identical to m{k}'s, else None. (P0-3: the dd3r run scored
+    0009 m0/m1 — the SAME single-character edit — as two valid mutants in two
+    fault classes, double-counting one injection in numerator and denominator.)"""
+    d = Path(app_out_dir)
+
+    def sig(j: int):
+        mj = d / f"m{j}"
+        pm, nf = mj / "patch_meta.json", mj / "new_file.txt"
+        if not (pm.exists() and nf.exists()):
+            return None
+        try:
+            rel = json.loads(pm.read_text(encoding="utf-8")).get("file")
+        except Exception:
+            return None
+        return (rel, hashlib.sha256(nf.read_bytes()).hexdigest())
+
+    mine = sig(k)
+    if mine is None:
+        return None
+    for j in range(k):
+        if sig(j) == mine:
+            return j
+    return None
+
+
+def injection_sha(mutant_dir: Path) -> str:
+    """Stable digest of a cached injection (target file path + patched content).
+    Stored in result.json so a resume can prove the verdict still belongs to the
+    injection on disk (P0-4)."""
+    d = Path(mutant_dir)
+    rel = json.loads((d / "patch_meta.json").read_text(encoding="utf-8")).get("file", "")
+    h = hashlib.sha256()
+    h.update(str(rel).encode("utf-8"))
+    h.update(b"\x00")
+    h.update((d / "new_file.txt").read_bytes())
+    return h.hexdigest()
+
+
+def cached_result_ok(mutant_dir: Path) -> dict | None:
+    """Return the stored result.json verdict iff it can be reused VERBATIM on
+    resume — P0-4: a completed mutant's judge votes must not be re-rolled (the
+    documented resume flow re-judged every finished mutant, letting verdicts
+    drift between runs and allowing a NEW injection to be judged against a STALE
+    result.md). Reusable when the stored injection_sha matches the injection on
+    disk, or when the result is legacy (no sha; re-deriving it would itself
+    re-roll votes). None when result.json is absent/corrupt or the injection
+    changed after the verdict."""
+    d = Path(mutant_dir)
+    rp = d / "result.json"
+    if not rp.exists():
+        return None
+    try:
+        res = json.loads(rp.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    stored = res.get("injection_sha")
+    if stored is None:
+        return res
+    try:
+        return res if stored == injection_sha(d) else None
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
 
 
 def classify_validity(deploy_ok: bool, reachable: bool) -> str:
@@ -223,7 +321,8 @@ def parse_catch(md: str) -> dict:
     prose, which is exactly the downward bias the balanced scan fixes. Handles
     '' / None without raising (judge_catch_http feeds '' on total HTTP failure)."""
     if not md:
-        return {"caught": False, "matched_item": None, "reason": "empty verdict"}
+        return {"caught": False, "matched_item": None, "reason": "empty verdict",
+                "unparseable": True}
 
     # 1) Prefer a fenced ```json ... ``` block — tolerates braces inside reason prose.
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", md, re.DOTALL)
@@ -249,13 +348,15 @@ def parse_catch(md: str) -> dict:
     # 3) Legacy bare brace match (no-nested-brace) as a final conservative resort.
     m = re.search(r"\{[^{}]*\"caught\"[^{}]*\}", md, re.DOTALL)
     if not m:
-        return {"caught": False, "matched_item": None, "reason": "unparseable verdict"}
+        return {"caught": False, "matched_item": None, "reason": "unparseable verdict",
+                "unparseable": True}
     try:
         v = json.loads(m.group(0))
         v["caught"] = bool(v.get("caught", False))
         return v
     except Exception:
-        return {"caught": False, "matched_item": None, "reason": "json error"}
+        return {"caught": False, "matched_item": None, "reason": "json error",
+                "unparseable": True}
 
 
 # ---------- mutant pre-checks (reachability + manifestation) ----------
@@ -402,7 +503,7 @@ def use_http_judge(judge_cfg) -> bool:
     return bool(base_url)
 
 
-import asyncio  # noqa: E402  (kept with the async helpers)
+# (asyncio imported at module head)
 
 from claude_agent_sdk import (  # noqa: E402
     query, ClaudeAgentOptions, AssistantMessage, ResultMessage, TextBlock,
@@ -458,13 +559,17 @@ async def generate_mutant(app_dir: Path, instruction: str, fault_class: str, mod
 
 async def judge_catch(injected: dict, result_md: str, model: str, votes: int = 3) -> dict:
     """Run the catch-judge `votes` times and take the majority (D1). Returns
-    {caught, votes:[...]} with every vote's verdict for the audit trail."""
+    {caught, votes:[...], discarded_unparseable} with every VALID vote's verdict
+    for the audit trail; unparseable ballots are re-cast and, if persistent,
+    discarded rather than seated as fake 'no' votes (P0-1)."""
     prompt = USER_PROMPT["mutation_catch"].substitute(
         injected=json.dumps(injected, ensure_ascii=False), result=result_md,
     )
-    ballots = await asyncio.gather(*(run_query(prompt, model) for _ in range(votes)))
-    parsed = [parse_catch(b) for b in ballots]
-    return {"caught": majority_caught([p["caught"] for p in parsed]), "votes": parsed}
+
+    async def cast() -> str:
+        return await run_query(prompt, model)
+
+    return await ballots_with_reballot(cast, votes=votes)
 
 
 def _judge_http_one(prompt: str, judge_cfg, retry: int = 5) -> str:
@@ -522,16 +627,21 @@ async def judge_catch_http(injected: dict, result_md: str, judge_cfg, votes: int
     and aggregates with the EXISTING majority_caught — returning the SAME shape as
     judge_catch: {caught: bool, votes:[parse_catch dicts]}.
 
-    Each blocking requests.post runs via asyncio.to_thread, and the `votes` calls
-    are gathered in parallel (mirroring judge_catch's asyncio.gather) so the event
+    Each blocking requests.post runs via asyncio.to_thread, and the first round
+    of `votes` calls is gathered in parallel (mirroring judge_catch) so the event
     loop stays responsive under --concurrency>1 (a bare blocking post would freeze
-    the loop up to votes*120s and serialize every mutant). A dead HTTP vote counts
-    as a no-catch ballot, never a phantom catch; len(votes) always == `votes`."""
+    the loop up to votes*120s and serialize every mutant). Unparseable ballots
+    (HTTP-dead OR 200-with-garbage, e.g. finish_reason=length truncation) are
+    re-cast and, if persistent, DISCARDED instead of seated as fake 'no' votes —
+    majority is strict over valid seats only (P0-1; previously a dead/garbage
+    vote occupied a seat and decided 0074 m3 as a false miss)."""
     prompt = USER_PROMPT["mutation_catch"].substitute(
         injected=json.dumps(injected, ensure_ascii=False), result=result_md,
     )
-    ballots = await asyncio.gather(
-        *(asyncio.to_thread(_judge_http_one, prompt, judge_cfg) for _ in range(votes))
-    )
-    parsed = [parse_catch(b) for b in ballots]
-    return {"caught": bool(majority_caught([p["caught"] for p in parsed])), "votes": parsed}
+
+    async def cast() -> str:
+        return await asyncio.to_thread(_judge_http_one, prompt, judge_cfg)
+
+    out = await ballots_with_reballot(cast, votes=votes)
+    out["caught"] = bool(out["caught"])
+    return out

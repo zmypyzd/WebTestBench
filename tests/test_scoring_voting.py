@@ -318,13 +318,14 @@ def test_get_matches_valid_empty_ballot_kept_not_dropped(tmp_path):
     assert cache["votes"] == 2
 
 
-def test_get_matches_cache_reused_when_source_and_votes_match(tmp_path):
-    """Cache hit when stored source AND votes match -> no _call_api invoked."""
+def test_get_matches_cache_reused_when_source_votes_fingerprint_match(tmp_path):
+    """Cache hit requires source AND votes AND gold+pred fingerprint (P0-2)."""
     cache = {
         "matches": [["p1", "1"]],
         "detailed_matches": [],
         "source": "result",
         "votes": 2,
+        "fingerprint": scoring.match_cache_fingerprint(GOLD, PRED),
     }
     (tmp_path / "score_match_ids.json").write_text(json.dumps(cache))
     p = _bare_pipeline(match_votes=2)
@@ -364,8 +365,11 @@ def test_get_matches_cache_invalidated_on_votes_mismatch(tmp_path):
     assert cache["votes"] == 3
 
 
-def test_get_matches_legacy_cache_reused_at_k1(tmp_path):
-    """Legacy cache lacking 'votes' is reused at default K=1 with zero recompute."""
+def test_get_matches_legacy_cache_without_fingerprint_is_rematched(tmp_path):
+    """P0-2 (2026-06-11 audit): legacy caches carry no gold fingerprint, so a
+    gold writeback followed by an in-place rescore would silently reuse matches
+    computed against the OLD gold. Legacy caches are therefore NEVER reused —
+    one-time rematch, then the rewritten cache carries the fingerprint."""
     legacy = {
         "matches": [["p1", "1"]],
         "detailed_matches": [],
@@ -373,14 +377,16 @@ def test_get_matches_legacy_cache_reused_at_k1(tmp_path):
     }
     (tmp_path / "score_match_ids.json").write_text(json.dumps(legacy))
     p = _bare_pipeline(match_votes=1)
-    sentinel = _ScriptedCalls([])
-    p._call_api = sentinel
+    scripted = _ScriptedCalls([(True, "[('p1', '1')]", None)])
+    p._call_api = scripted
     out = p._get_matches(
         instruction="i", gold_items=GOLD, pred_items=PRED,
         output_dir=tmp_path, source="result", retry=1,
     )
     assert [tuple(r) for r in out] == [("p1", "1")]
-    assert sentinel.calls == 0
+    assert scripted.calls == 1  # rematched, did NOT reuse the unfingerprinted cache
+    cache = json.loads((tmp_path / "score_match_ids.json").read_text())
+    assert cache["fingerprint"] == scoring.match_cache_fingerprint(GOLD, PRED)
 
 
 def test_get_matches_empty_cache_matching_votes_and_empty_preds_short_circuits(tmp_path):

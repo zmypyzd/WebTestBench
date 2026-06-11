@@ -191,7 +191,7 @@ def test_judge_catch_http_aggregates_majority(monkeypatch):
     cfg = _Cfg(base_url="https://api.example/v1/chat", api_key="k", model="MiniMax-M3")
     verdict = asyncio.run(ml.judge_catch_http({"file": "src/x.tsx"}, "# Test Result\nFAIL", cfg))
 
-    assert set(verdict.keys()) == {"caught", "votes"}
+    assert {"caught", "votes"} <= set(verdict.keys())  # + discarded_unparseable (P0-1)
     assert verdict["caught"] is True
     assert isinstance(verdict["caught"], bool)
     assert len(verdict["votes"]) == 3
@@ -210,25 +210,29 @@ def test_judge_catch_http_minority_not_caught(monkeypatch):
     monkeypatch.setattr(ml.requests, "post", lambda *a, **kw: _fake_resp(next(seq)))
     cfg = _Cfg(base_url="https://api.example/v1/chat", api_key="k")
     verdict = asyncio.run(ml.judge_catch_http({"file": "f"}, "result", cfg))
-    assert verdict["caught"] is False
-    assert len(verdict["votes"]) == 3
+    assert verdict["caught"] is False           # 1/3 is not a strict majority
+    assert len(verdict["votes"]) == 3           # all ballots valid -> all seated
+    assert verdict["discarded_unparseable"] == 0
 
 
-def test_judge_catch_http_malformed_ballot_is_conservative(monkeypatch):
-    # malformed/non-JSON content -> that ballot parses to caught=False (conservative)
+def test_judge_catch_http_malformed_ballot_reballoted_then_discarded(monkeypatch):
+    # P0-1: a malformed ballot is RE-CAST; if it stays garbage it is DISCARDED,
+    # never seated as a fake 'no' vote (the 0074 m3 false-miss scar).
     contents = [
         '{"caught": true, "reason": "x"}',
         'totally not json',
         '{"caught": true, "reason": "z"}',
+        'still not json',     # re-ballot 1 for seat 2
+        'nope, garbage',      # re-ballot 2 for seat 2 -> discarded
     ]
     seq = iter(contents)
     monkeypatch.setattr(ml.requests, "post", lambda *a, **kw: _fake_resp(next(seq)))
     cfg = _Cfg(base_url="https://api.example/v1/chat", api_key="k")
     verdict = asyncio.run(ml.judge_catch_http({"file": "f"}, "result", cfg))
-    # 2 true, 1 unparseable(false) -> majority True
-    assert verdict["caught"] is True
-    assert verdict["votes"][1]["caught"] is False
-    assert len(verdict["votes"]) == 3
+    assert verdict["caught"] is True            # majority over 2 VALID seats
+    assert len(verdict["votes"]) == 2           # discarded seat does not vote
+    assert verdict["discarded_unparseable"] == 1
+    assert all(v["caught"] is True for v in verdict["votes"])
 
 
 def test_judge_catch_http_total_failure_counts_as_no_catch(monkeypatch):
@@ -242,9 +246,9 @@ def test_judge_catch_http_total_failure_counts_as_no_catch(monkeypatch):
     monkeypatch.setattr(ml.time, "sleep", lambda *a, **kw: None)
     cfg = _Cfg(base_url="https://api.example/v1/chat", api_key="k")
     verdict = asyncio.run(ml.judge_catch_http({"file": "f"}, "result", cfg))
-    assert verdict["caught"] is False
-    assert len(verdict["votes"]) == 3
-    assert all(v["caught"] is False for v in verdict["votes"])
+    assert verdict["caught"] is False           # conservative: zero valid seats
+    assert verdict["votes"] == []               # P0-1: dead ballots never seated
+    assert verdict["discarded_unparseable"] == 3
 
 
 def test_judge_catch_http_non200_counts_as_no_catch(monkeypatch):
@@ -261,7 +265,8 @@ def test_judge_catch_http_non200_counts_as_no_catch(monkeypatch):
     cfg = _Cfg(base_url="https://api.example/v1/chat", api_key="k")
     verdict = asyncio.run(ml.judge_catch_http({"file": "f"}, "result", cfg))
     assert verdict["caught"] is False
-    assert len(verdict["votes"]) == 3
+    assert verdict["votes"] == []               # P0-1: dead ballots never seated
+    assert verdict["discarded_unparseable"] == 3
 
 
 def test_parse_injection_extracts_record_and_file():
