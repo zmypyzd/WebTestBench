@@ -214,6 +214,11 @@ async def main() -> None:
     ap.add_argument("--apps", required=True, help="comma-separated app ids (WebTestBench_NNNN)")
     ap.add_argument("--mutants-per-app", type=int, default=2)
     ap.add_argument("--regen-mutants", action="store_true", help="force regenerate cached mutants")
+    ap.add_argument("--out-root", default=None,
+                    help="override the probe output root (default outputs/_mutation_probe). "
+                         "Pre-seed it with each mutant's injected.json/patch_meta.json/new_file.txt "
+                         "to re-measure the SAME injections with fresh detection (e.g. a new "
+                         "detection prompt) without touching the baseline's run/ artifacts.")
     ap.add_argument("--model", default="sonnet", help="model for generation + judge")
     ap.add_argument("--api_base_url", required=True)
     ap.add_argument("--api_key", required=True)
@@ -238,6 +243,11 @@ async def main() -> None:
                     help="seconds bounding the async detection (agent.run()); on timeout "
                          "the mutant is marked invalid and excluded from the denominator")
     args = ap.parse_args()
+
+    global OUT_DIR
+    if args.out_root:
+        p = Path(args.out_root)
+        OUT_DIR = p if p.is_absolute() else ROOT / p
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     app_ids = [a.strip() for a in args.apps.split(",") if a.strip()]
