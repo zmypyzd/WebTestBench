@@ -436,3 +436,14 @@ ultracode 双线工作流（87 agents；尾部 3 个收尾 agent 撞 session lim
 ## 隐患排查：衍生子集 jsonl 陈旧性 (2026-06-10)
 
 回写只改主 `WebTestBench.jsonl`，所有已抽取的子集副本静默保留旧 checklist——`_eval_trusted.jsonl` 在 P4+Q3 后已 **20/28 条陈旧**（138 vs 167 bugs），若被打分引用会用旧 gold 低估 recall。处置：新增 tracked 守卫 `process/check_subset_staleness.py`（审计全部子集；冻结的 A/B 输入 `_gwb5_*`、`_p4q1/*` 拒绝刷新；`--refresh` 带备份重写）。已刷新 8 个非冻结子集（`_eval_trusted`、`_eval_mini` + 6 个历史消融输入），审计全绿。**纪律：每次 gold 回写后跑一遍该脚本。**
+
+## 官方 7-app 基线（mini-7）落定 (2026-06-11)
+
+用户决定：暂不立 28-set 基线，**以 mini-7（_eval_mini.jsonl，每类 1 app：0009/0035/0037/0070/0074/0080/0089）为当前工作基线**。预测复用 p1exp 检测产物（无需重测），测量系统 = 现行 gold（含 29 回写，7 app 计 58 bugs）+ MiniMax-M3 K=3 + 极性 prompt。版本目录 `outputs/p1exp_mini7/`。
+
+| | P | R | F1 | coverage |
+|---|---|---|---|---|
+| **mini-7 基线 (当前)** | **0.7631** | **0.2909** | **0.3817** | 0.6794 |
+| 旧 7-app 数字（votes=1/旧 gold/旧 prompt，作废） | 0.3214 | 0.1862 | 0.2289 | — |
+
+by_class：FT 0.449 > CS 0.3429 > CT 0.1667 > **IX 0.0**（与突变尺梯度一致：交互/内容类是检测盲区）。per-record 两极：0035 F1 0.8235 最好；0070 R=1/9、0074 R=1/10 ——Q3 白盒回写的 9 条 bug 对 p1exp 多为 FN，**这是 gold 补全后的诚实盲区度量，不是退步**。注意新旧数字之差全部来自测量系统（同一批预测）；后续检测优化以 0.3817 为对照起点。配套 gold-independent 尺：7-app 突变 catch_rate 存档 0.429 / 修正口径 0.520（harness 预检落地后正式重基线）。
