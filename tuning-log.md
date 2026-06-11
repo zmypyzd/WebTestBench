@@ -503,3 +503,13 @@ branch `tune/matcher-defect-anchor`（merge `90e5251`）。**问题**：`_parse_
 **度量语义备忘**：混淆矩阵只遍历 gold 项——**unmatched 的 FAIL 预测对 P/R 完全不可见**（只影响 coverage）；精度损失只来自「FAIL 预测连到 gold-ok 项」。此前 FP 普查把 unmatched 也计为 FP 系口径偏差，结论不受影响（那些是该回写的真 bug）。
 
 **官方基线对更新：gold 尺 = 0.4480（`outputs/m7dm_new`，defect-anchor matcher + 33-bug gold + K=3）+ 变异尺 = 0.760**。0.4142/0.3817 作废。
+
+## 时间漂移 gold 修复：0002/0006 追加 3 项（不翻转） (2026-06-11，承上)
+
+[[gold-time-drift-invalidity]]（2026-06-03 在案）的处置落地，机制全部于今日白盒复核。**修复策略 = 0070 追加不翻转**：agent 可自建 2026 日期的事件/记录而正常通过 browse/dashboard——翻转 #6/#7/#8(0002) 或 #21(0006) 会惩罚正确的新数据观察；在任何未来时钟下都稳定成立的缺陷是「**预置种子数据永不可达/不可见**」，以条件 bug 项入账（`process/gold_writeback_timedrift_3.py`，备份 `.bak-gold-writeback-timedrift`）：
+
+- **0002#20 (FT)** 种子事件访客侧全线不可见：所有访客列表路径（浏览/搜索/类别/日期筛选）终于 `>= new Date()`（Index.tsx L43）而种子全 2025 日期 → 开箱即 "No events found"、搜索既有事件 0 结果。
+- **0002#21 (CS)** Featured 区无日期窗（Index.tsx L15-16）→ 已过期活动在访客首页可见——gold#13 的旁路违规半面（#13 保持 pass=True，主网格的过滤真实成立）。
+- **0006#22 (FT)** Reports 月份下拉只给最近 12 个相对月（Reports.tsx L13-21）→ 含全部种子交易的 2024-10..12 永不可选、Reports 永不能汇总既有数据。**修正旧记忆的过宽论断**：TaxSummary 年份下拉跨最近 5 年、2024 可达（TaxSummary.tsx L15-18），不在缺陷内。
+
+**gold 现 36 bugs**。7 个含 0002/0006 的存活子集全刷新、审计全绿。0002/0006 仍排除在 `_eval_trusted`/mini-7 之外（冻结基线集不动）；此修复使其 gold 对未来全集跑批有效。队列 ①-⑥ 全部完成。
